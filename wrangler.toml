@@ -1,0 +1,21 @@
+# HTML 托管舱 · Cloudflare Worker 配置
+# 部署: npx wrangler deploy
+# 本地调试: npx wrangler dev
+
+name = "html-hosting"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# ── 环境变量配置 ─────────────────────────────────────────────
+# GH_TOKEN 不要写在这里！用命令设置密钥:
+#   npx wrangler secret put GH_TOKEN
+# Token 需要 repo（或 contents）读写权限: https://github.com/settings/tokens
+#
+# 以下三个变量按你的 GitHub 仓库修改:
+[vars]
+GH_OWNER = "your-github-username"
+GH_REPO = "your-repo-name"
+GH_BRANCH = "main"
+
+# 可选: GitHub Enterprise 自建实例可覆盖 API 地址 (默认 https://api.github.com)
+# GH_API = "https://api.github.com"
