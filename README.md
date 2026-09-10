@@ -1,1 +1,125 @@
-# htmltuoguan
+# HTML 托管舱 · Hosting Bay
+
+部署在 **Cloudflare Workers** 上的 HTML 自助部署工具：上传 ZIP / HTML / 粘贴代码 → 存入 GitHub 仓库 → 秒级获得公开访问链接。
+
+```
+浏览器 ──POST /api/upload──▶ Cloudflare Worker ──REST API──▶ GitHub 仓库 sites/{项目名}/
+浏览器 ◀──GET /{项目名}/──── Cloudflare Worker ◀──raw 回源── GitHub（边缘缓存 5 分钟）
+```
+
+## 功能
+
+- 图形化控制台（`/`）：拖拽上传 ZIP / HTML 文件、粘贴 HTML 代码、项目名即时校验（格式 + 唯一性）
+- 项目名唯一性校验（以仓库 `sites/` 实际目录为准，冲突返回 409）
+- ZIP 必须包含 `index.html` 校验；自动剥离外层文件夹（`site/index.html` → 根目录）；自动过滤 `__MACOSX`、`.DS_Store`
+- 项目列表展示（文件数 / 总大小 / 访问链接）
+- 站点静态服务：`/{项目名}/` 渲染 `index.html`，其余文件按原路径回源，子目录自动回退 `index.html`
+- 安全：项目名白名单正则、URL/ZIP 双重路径穿越防护、`X-Content-Type-Options: nosniff`
+
+## 快速开始
+
+```bash
+git clone https://github.com/dexin-11/htmltuoguan && cd htmltuoguan
+npm install            # 安装 wrangler
+npx wrangler login     # 登录 Cloudflare
+```
+
+### 1. 准备 GitHub 仓库
+
+任意空仓库或已有仓库均可（默认分支需已存在），Worker 会把站点写入 `sites/` 目录。
+
+### 2. 生成 Token
+
+打开 https://github.com/settings/tokens 创建 Token：
+
+- **Fine-grained（推荐）**：仅勾选目标仓库，权限 `Contents: Read and write`
+- **Classic**：勾选 `repo` scope
+
+### 3. 配置环境变量
+
+编辑 [wrangler.toml](wrangler.toml)：
+
+```toml
+[vars]
+GH_OWNER = "your-github-username"   # GitHub 用户名 / 组织名
+GH_REPO  = "your-repo-name"         # 存储仓库
+GH_BRANCH = "main"                  # 存储分支（需已存在）
+```
+
+设置 Token（密钥，不入库）：
+
+```bash
+npx wrangler secret put GH_TOKEN
+```
+
+可选变量：`GH_API`（自建 GitHub Enterprise 的 API 地址，默认 `https://api.github.com`）。
+
+### 4. 部署
+
+```bash
+npx wrangler deploy
+```
+
+部署完成后打开 `https://<worker域名>/` 即为控制台；可用 `https://<worker域名>/api/health` 验证配置（返回 `configured` / `token_valid`）。
+
+## 使用
+
+**页面操作**：打开 Worker 首页 → 填项目名（小写字母/数字/连字符，1-40 位）→ 拖入 ZIP（内含 index.html）或 .html 文件，或切到"粘贴代码" → 点"部署到 GITHUB" → 复制返回的链接。
+
+**规则与限制**：
+
+| 项目 | 限制 |
+|---|---|
+| 项目名 | `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`，保留字 `api` |
+| 必须包含 | 根目录 `index.html`（外层文件夹自动剥离） |
+| 单文件 | ≤ 10MB |
+| 项目总量 | ≤ 20MB、≤ 200 个文件 |
+| 名称冲突 | 409 拒绝；同名的目录需先在仓库中删除 |
+
+## API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/` | 图形化控制台 |
+| `GET` | `/{项目名}/` | 访问站点（`/{项目名}` 301 跳转至此） |
+| `GET` | `/api/sites` | 项目列表 `{ok, sites:[{name, files, size}]}` |
+| `GET` | `/api/health` | 配置自检 `{configured, missing, token_valid}` |
+| `POST` | `/api/upload` | 部署（见下） |
+
+上传接口支持两种请求体：
+
+```bash
+# 1. multipart/form-data：字段 name + file（.zip 或 .html）
+curl -F name=my-site -F file=@site.zip https://<worker域名>/api/upload
+
+# 2. application/json：直接粘贴 HTML
+curl -H 'Content-Type: application/json' \
+     -d '{"name":"my-site","html":"<h1>hello</h1>"}' \
+     https://<worker域名>/api/upload
+```
+
+成功返回 `{"ok":true,"name":"my-site","url":"/my-site/","files":N}`；失败返回 `{"ok":false,"error":"..."}`（400 参数错误 / 409 名称占用 / 413 超限 / 5xx GitHub 或配置错误）。
+
+## 本地开发与测试
+
+```bash
+cp .dev.vars.example .dev.vars   # 填入本地测试用的 GitHub 配置
+npx wrangler dev                 # http://localhost:8787
+npm test                         # 27 项全链路测试（mock GitHub，零依赖，需系统 python3）
+```
+
+## 注意事项
+
+- Worker 调用 GitHub API 有 5000 次/小时限额；部署是逐文件提交（避免 GitHub 并发提交限制），一个 200 文件的站点消耗约 201 次配额
+- 若部署中途失败（如限流），部分文件可能已写入仓库，可删除远端 `sites/{项目名}/` 目录后重试
+- 回源内容在 Cloudflare 边缘缓存 5 分钟，更新站点后最多延迟 5 分钟生效
+- 控制台无鉴权，任何知道域名的人都可部署；如需限制访问，请在 Cloudflare 侧启用 Access 等防护
+
+## 项目结构
+
+```
+src/index.js   Worker：路由 / 校验 / 零依赖 ZIP 解析 / GitHub API / 静态回源
+src/ui.js      图形化控制台页面（内嵌 HTML）
+test/          全链路测试（mock GitHub REST API）
+wrangler.toml  Cloudflare Workers 配置与环境变量
+```

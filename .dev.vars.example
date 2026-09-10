@@ -1,0 +1,5 @@
+# 本地开发环境变量示例（复制为 .dev.vars 供 wrangler dev 使用，.dev.vars 已被 git 忽略）
+GH_TOKEN=ghp_your_token_here
+GH_OWNER=your-github-username
+GH_REPO=your-repo-name
+GH_BRANCH=main
