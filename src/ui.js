@@ -117,7 +117,7 @@ main{position:relative; z-index:1; max-width:1180px; margin:0 auto; padding:56px
 .tab.active{background:var(--acc); color:var(--acc-ink); border-color:var(--acc); font-weight:700}
 .tab:not(.active):hover{color:var(--fg); border-color:var(--fg)}
 
-/* 项目名 */
+/* 项目名 + 有效期 */
 .field-label{display:block; font-size:11.5px; letter-spacing:.2em; color:var(--dim); margin-bottom:8px}
 .name-row{margin-bottom:20px}
 #name-input{
@@ -127,6 +127,10 @@ main{position:relative; z-index:1; max-width:1180px; margin:0 auto; padding:56px
 #name-input:focus{outline:none; border-color:var(--acc); box-shadow:0 0 0 3px rgba(61,255,139,.12)}
 .name-status{display:block; margin-top:7px; font-size:12.5px; color:var(--faint)}
 .name-status.ok{color:var(--acc)} .name-status.bad{color:var(--bad)}
+.expiry-row{display:flex; gap:8px; margin-bottom:20px}
+.exp-btn{flex:1; background:none; border:1px solid var(--line2); color:var(--dim); padding:9px 0; font-size:13px; letter-spacing:.04em; transition:.2s}
+.exp-btn.active{background:var(--acc); color:var(--acc-ink); border-color:var(--acc); font-weight:700}
+.exp-btn:not(.active):hover{color:var(--fg); border-color:var(--fg)}
 
 /* 拖放区 */
 .dropzone{
@@ -272,12 +276,19 @@ noscript{display:block;padding:16px;color:var(--bad)}
           <span id="name-status" class="name-status">小写字母 / 数字 / 连字符 · 1-40 位</span>
         </div>
 
+        <label class="field-label">有效期 · EXPIRY</label>
+        <div class="expiry-row" id="expiry-row">
+          <button type="button" class="exp-btn" data-exp="3d">3 天</button>
+          <button type="button" class="exp-btn active" data-exp="7d">7 天</button>
+          <button type="button" class="exp-btn" data-exp="30d">1 个月</button>
+        </div>
+
         <div id="pane-file">
           <label id="dropzone" class="dropzone" for="file-input">
             <input id="file-input" type="file" accept=".zip,.html,.htm" hidden>
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#3dff8b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m0 0L7 8m5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
             <p class="dz-main">拖拽 <b>ZIP / HTML</b> 到这里，或点击选择文件</p>
-            <p class="dz-hint">ZIP 内须包含 index.html · 单文件 ≤ 10MB · 项目总量 ≤ 20MB · ≤ 200 个文件</p>
+            <p class="dz-hint">ZIP 内须包含 index.html · 单文件 ≤ 3MB · 项目总量 ≤ 10MB · ≤ 200 个文件</p>
           </label>
           <div id="file-chip" class="file-chip hidden">
             <span class="chip-badge" id="chip-badge">ZIP</span>
@@ -334,6 +345,7 @@ var takenNames = [];
 var currentFile = null;
 var tab = 'file';
 var busy = false;
+var expiry = '7d';
 var $ = function(id){ return document.getElementById(id); };
 
 function fmtBytes(n){
@@ -380,6 +392,17 @@ function switchTab(t){
 }
 $('tab-file').onclick = function(){ switchTab('file'); };
 $('tab-paste').onclick = function(){ switchTab('paste'); };
+
+/* 有效期选择 */
+(function(){
+  var btns = $('expiry-row').querySelectorAll('.exp-btn');
+  btns.forEach(function(b){
+    b.onclick = function(){
+      expiry = b.getAttribute('data-exp');
+      btns.forEach(function(x){ x.classList.toggle('active', x === b); });
+    };
+  });
+})();
 
 /* 拖放区 */
 var dz = $('dropzone'), fi = $('file-input');
@@ -438,12 +461,13 @@ function deploy(){
     if(!currentFile){ setMsg('请先选择 ZIP 或 HTML 文件', 'bad'); return; }
     var fd = new FormData();
     fd.append('name', name);
+    fd.append('expiry', expiry);
     fd.append('file', currentFile);
     opts = { method: 'POST', body: fd };
   } else {
     var html = $('paste-area').value || '';
     if(!html.trim()){ setMsg('请先粘贴 HTML 内容', 'bad'); return; }
-    opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, html: html }) };
+    opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, html: html, expiry: expiry }) };
   }
 
   busy = true;
@@ -464,6 +488,7 @@ function deploy(){
         $('result-link').textContent = link;
         $('result-link').href = link;
         $('open-btn').href = link;
+        document.querySelector('.result-ok').textContent = '✔ 部署完成 · 有效期 ' + (j.expiry_days || 7) + ' 天';
         $('result').classList.remove('hidden');
         setMsg('');
         if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
@@ -484,6 +509,16 @@ function deploy(){
 $('copy-btn').onclick = function(){ copyText($('result-link').textContent, this); };
 
 /* 站点列表 */
+function fmtExpiry(s){
+  if(!s.expire_at) return '长期';
+  var ms = s.expire_at - Date.now();
+  if(s.expired || ms <= 0) return '已过期';
+  var d = Math.floor(ms / 86400000);
+  if(d >= 1) return '剩 ' + d + ' 天';
+  var h = Math.floor(ms / 3600000);
+  if(h >= 1) return '剩 ' + h + ' 小时';
+  return '剩 ' + Math.max(1, Math.floor(ms / 60000)) + ' 分钟';
+}
 function row(s, i){
   var el = document.createElement('div'); el.className = 'site-row';
   var idx = document.createElement('span'); idx.className = 'sr-idx';
@@ -491,7 +526,8 @@ function row(s, i){
   var nm = document.createElement('a'); nm.className = 'sr-name';
   nm.href = '/' + s.name + '/'; nm.target = '_blank'; nm.rel = 'noopener'; nm.textContent = s.name;
   var meta = document.createElement('span'); meta.className = 'sr-meta';
-  meta.textContent = s.files + ' 个文件 · ' + fmtBytes(s.size);
+  meta.textContent = s.files + ' 个文件 · ' + fmtBytes(s.size) + ' · ' + fmtExpiry(s);
+  if(s.expired || (s.expire_at && s.expire_at - Date.now() <= 0)) meta.style.color = 'var(--amber)';
   var act = document.createElement('span'); act.className = 'sr-act';
   var cp = document.createElement('button'); cp.type = 'button'; cp.className = 'sr-btn'; cp.textContent = '复制';
   cp.onclick = function(){ copyText(location.origin + '/' + s.name + '/', cp); };

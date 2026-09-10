@@ -7,8 +7,11 @@ import { UI_HTML, FAVICON_SVG } from "./ui.js";
 const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/; // 1-40 位，小写字母/数字/连字符
 const RESERVED = new Set(["api"]); // 系统保留的项目名
 const MAX_FILES = 200; // 单个项目最多文件数
-const MAX_FILE_BYTES = 10 * 1024 * 1024; // 单文件上限 10MB
-const MAX_TOTAL_BYTES = 20 * 1024 * 1024; // 项目总大小上限 20MB
+const MAX_FILE_BYTES = 3 * 1024 * 1024; // 单文件上限 3MB
+const MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 项目总大小上限 10MB
+const META_FILE = ".bay.json"; // 站点元数据文件（记录有效期）
+const EXPIRY_DAYS = { "3d": 3, "7d": 7, "30d": 30 }; // 有效期选项：3 天 / 7 天 / 1 个月
+const DEFAULT_EXPIRY = "7d";
 
 // ---------- 通用工具 ----------
 class UserError extends Error {
@@ -217,31 +220,98 @@ async function ghErrorDetail(res) {
   }
 }
 
-// 列出所有项目（扫描仓库 sites/ 目录树）
-async function listSites(env) {
+// 获取仓库 sites/ 下的全部文件（树扫描）；分支/仓库不存在返回 null
+async function getTree(env) {
   const { owner, repo, branch } = ghConfig(env);
   const res = await ghFetch(env, `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-  if (res.status === 404) {
-    return { sites: [], warning: "仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置" };
-  }
+  if (res.status === 404) return null;
   if (res.status === 401) throw new UserError("GitHub Token 无效或未授权 (401)，请检查 GH_TOKEN", 502);
   if (res.status === 403) throw new UserError("GitHub 拒绝访问 (403)：Token 权限不足或触发限流", 502);
   if (!res.ok) throw new UserError("GitHub API 请求失败" + (await ghErrorDetail(res)), 502);
-
   const data = await res.json();
+  return (data.tree || []).filter((it) => it.type === "blob" && it.path.startsWith("sites/"));
+}
+
+// 由文件树聚合出项目列表 Map<name, {name, files, size, paths}>
+function sitesFromTree(blobs) {
   const sites = new Map();
-  for (const it of data.tree || []) {
-    if (it.type !== "blob" || !it.path.startsWith("sites/")) continue;
+  for (const it of blobs) {
     const rest = it.path.slice(6); // 去掉 "sites/"
     const slash = rest.indexOf("/");
-    if (slash <= 0) continue; // 不含文件的一级目录，跳过
+    if (slash <= 0) continue;
     const name = rest.slice(0, slash);
-    const s = sites.get(name) || { name, files: 0, size: 0 };
+    const s = sites.get(name) || { name, files: 0, size: 0, paths: [] };
     s.files += 1;
     s.size += it.size || 0;
+    s.paths.push(it);
     sites.set(name, s);
   }
-  return { sites: [...sites.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+  return sites;
+}
+
+// 读取站点元数据（有效期）；无元数据或读取失败视为长期有效
+async function getMeta(env, name) {
+  const { api, owner, repo, branch, token } = ghConfig(env);
+  const url = `${api}/repos/${owner}/${repo}/contents/${encodePath(`sites/${name}/${META_FILE}`)}?ref=${encodeURIComponent(branch)}`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: "Bearer " + token,
+        Accept: "application/vnd.github.raw",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "html-hosting-worker",
+      },
+      cf: { cacheTtl: 300, cacheEverything: true }, // 边缘缓存 5 分钟
+    });
+    if (!res.ok) return null;
+    const j = JSON.parse(await res.text());
+    return j && typeof j.expire_at === "number" ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+const isExpired = (meta, now = Date.now()) => !!meta && meta.expire_at <= now;
+
+// 删除站点全部文件（含元数据）；逐个删除，失败不中断
+async function deleteSite(env, name, blobs) {
+  const { owner, repo, branch } = ghConfig(env);
+  for (const it of blobs) {
+    const res = await ghFetch(env, `/repos/${owner}/${repo}/contents/${encodePath(it.path)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: `cleanup(html-hosting): 过期删除 ${name}`, sha: it.sha, branch }),
+    });
+    if (!res.ok && res.status !== 404 && res.status !== 409) {
+      // 尽力而为：单个失败不影响其余文件
+    }
+  }
+}
+
+// 项目列表接口：附带有效期信息，顺带异步清理已过期站点
+async function handleListSites(env, ctx) {
+  const blobs = await getTree(env);
+  if (blobs === null) {
+    return { sites: [], warning: "仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置" };
+  }
+  const sites = sitesFromTree(blobs);
+  const out = [];
+  const expired = [];
+  const now = Date.now();
+  for (const s of sites.values()) {
+    const meta = await getMeta(env, s.name);
+    const item = { name: s.name, files: s.files, size: s.size, expire_at: meta ? meta.expire_at : null };
+    if (isExpired(meta, now)) {
+      item.expired = true;
+      expired.push(s);
+    }
+    out.push(item);
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  if (expired.length && ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(Promise.allSettled(expired.map((s) => deleteSite(env, s.name, s.paths))));
+  }
+  return { sites: out };
 }
 
 // 写入单个文件到仓库
@@ -263,8 +333,24 @@ async function putFile(env, sitePath, bytes, message) {
   }
 }
 
-// 从仓库读取并回源渲染站点文件
-async function serveFile(env, name, path) {
+// 从仓库读取并回源渲染站点文件；过期站点返回 410 并异步清理
+async function serveFile(env, name, path, ctx) {
+  // ---- 有效期检查 ----
+  const meta = await getMeta(env, name);
+  if (isExpired(meta)) {
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(
+        (async () => {
+          const blobs = await getTree(env);
+          if (!blobs) return;
+          const s = sitesFromTree(blobs).get(name);
+          if (s) await deleteSite(env, name, s.paths);
+        })()
+      );
+    }
+    return expiredPage();
+  }
+
   const { api, owner, repo, branch, token } = ghConfig(env);
   const url = `${api}/repos/${owner}/${repo}/contents/${encodePath(`sites/${name}/${path}`)}?ref=${encodeURIComponent(branch)}`;
   const res = await fetch(url, {
@@ -307,11 +393,12 @@ function validateName(raw) {
 
 async function handleUpload(request, env) {
   const ct = request.headers.get("content-type") || "";
-  let name, file, htmlText;
+  let name, file, htmlText, expiry = DEFAULT_EXPIRY;
 
   if (ct.includes("multipart/form-data")) {
     const fd = await request.formData();
     name = fd.get("name");
+    expiry = fd.get("expiry") || DEFAULT_EXPIRY;
     const f = fd.get("file");
     if (f && typeof f === "object" && typeof f.arrayBuffer === "function") file = f;
     else htmlText = fd.get("html");
@@ -324,11 +411,13 @@ async function handleUpload(request, env) {
     }
     name = body.name;
     htmlText = body.html;
+    expiry = body.expiry || DEFAULT_EXPIRY;
   } else {
     throw new UserError("不支持的请求类型，请使用 multipart/form-data 或 application/json", 415);
   }
 
   name = validateName(name);
+  if (!(expiry in EXPIRY_DAYS)) throw new UserError("有效期选项不合法（可选：3d / 7d / 30d）");
 
   // ---- 解析出待写入文件（始终保证根上有 index.html） ----
   let files; // [{path, bytes}]
@@ -338,7 +427,7 @@ async function handleUpload(request, env) {
     const isZip = fname.endsWith(".zip") || (head[0] === 0x50 && head[1] === 0x4b && head[2] === 3 && head[3] === 4);
     if (isZip) {
       const buf = await file.arrayBuffer();
-      if (buf.byteLength > MAX_TOTAL_BYTES) throw new UserError("压缩包超过 20MB 上限", 413);
+      if (buf.byteLength > MAX_TOTAL_BYTES) throw new UserError("压缩包超过 10MB 上限", 413);
       files = normalizeSiteFiles(await extractZip(buf));
     } else if (fname.endsWith(".html") || fname.endsWith(".htm")) {
       files = [{ path: "index.html", bytes: new Uint8Array(await file.arrayBuffer()) }];
@@ -353,14 +442,19 @@ async function handleUpload(request, env) {
 
   // ---- 大小限制 ----
   if (files.length > MAX_FILES) throw new UserError(`文件数超过上限（${MAX_FILES} 个）`, 413);
-  if (files.some((f) => f.bytes.length > MAX_FILE_BYTES)) throw new UserError("单个文件超过 10MB 上限", 413);
+  if (files.some((f) => f.bytes.length > MAX_FILE_BYTES)) throw new UserError("单个文件超过 3MB 上限", 413);
   const total = files.reduce((s, f) => s + f.bytes.length, 0);
-  if (total > MAX_TOTAL_BYTES) throw new UserError("项目总大小超过 20MB 上限", 413);
+  if (total > MAX_TOTAL_BYTES) throw new UserError("项目总大小超过 10MB 上限", 413);
 
-  // ---- 项目名唯一性校验（以仓库实际目录为准） ----
-  const { sites } = await listSites(env);
-  if (sites.some((s) => s.name === name)) {
-    throw new UserError(`项目名 "${name}" 已被占用，请更换一个`, 409);
+  // ---- 项目名唯一性校验（过期的项目自动清理后可复用名称） ----
+  const blobs = await getTree(env);
+  const existing = sitesFromTree(blobs || []).get(name);
+  if (existing) {
+    const meta = await getMeta(env, name);
+    if (!isExpired(meta)) {
+      throw new UserError(`项目名 "${name}" 已被占用，请更换一个`, 409);
+    }
+    await deleteSite(env, name, existing.paths); // 已过期：清理后复用
   }
 
   // ---- 逐个文件顺序提交（避免 GitHub 并发提交限制） ----
@@ -369,7 +463,12 @@ async function handleUpload(request, env) {
     await putFile(env, `sites/${name}/${f.path}`, f.bytes, `deploy(html-hosting): ${name} (${i + 1}/${files.length}) ${f.path}`);
   }
 
-  return json({ ok: true, name, url: `/${name}/`, files: files.length });
+  // ---- 写入有效期元数据 ----
+  const now = Date.now();
+  const meta = JSON.stringify({ v: 1, created_at: now, expire_at: now + EXPIRY_DAYS[expiry] * 86400000 });
+  await putFile(env, `sites/${name}/${META_FILE}`, new TextEncoder().encode(meta), `meta(html-hosting): ${name} 有效期 ${expiry}`);
+
+  return json({ ok: true, name, url: `/${name}/`, files: files.length, expiry_days: EXPIRY_DAYS[expiry] });
 }
 
 async function handleHealth(env) {
@@ -395,6 +494,12 @@ const notFoundPage = () =>
     { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } }
   );
 
+const expiredPage = () =>
+  new Response(
+    `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>410 · HTML 托管舱</title><style>body{background:#0a0f0c;color:#d9e6de;font-family:ui-monospace,monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center;border:1px solid #1e2d24;padding:48px 64px}h1{color:#ffb454;font-size:64px;margin:0 0 8px}p{color:#7d968a}a{color:#3dff8b}</style></head><body><div><h1>410</h1><p>该站点已过期并被清理</p><p><a href="/">← 返回托管舱重新部署</a></p></div></body></html>`,
+    { status: 410, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }
+  );
+
 // 解码 URL 路径分段并做安全校验（拒绝 ../ 穿越）
 function safeSegments(pathname) {
   const segs = [];
@@ -413,7 +518,7 @@ function safeSegments(pathname) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     const { pathname } = url;
@@ -433,7 +538,7 @@ export default {
 
       // ---- API ----
       if (pathname === "/api/sites" && (method === "GET" || method === "HEAD")) {
-        const { sites, warning } = await listSites(env);
+        const { sites, warning } = await handleListSites(env, ctx);
         return json({ ok: true, sites, ...(warning ? { warning } : {}) });
       }
       if (pathname === "/api/upload" && method === "POST") {
@@ -455,12 +560,12 @@ export default {
             const rest = segs.slice(1).join("/");
             if (!rest) {
               // /{项目名} → 301 到 /{项目名}/，保证站内相对路径正确解析
-              if (pathname.endsWith("/")) return await serveFile(env, name, "index.html");
+              if (pathname.endsWith("/")) return await serveFile(env, name, "index.html", ctx);
               return new Response(null, { status: 301, headers: { Location: `/${name}/` } });
             }
             // /{项目名}/子目录/ → 自动回退到该目录的 index.html
             const filePath = pathname.endsWith("/") ? `${rest}/index.html` : rest;
-            return await serveFile(env, name, filePath);
+            return await serveFile(env, name, filePath, ctx);
           }
         }
         return notFoundPage();
