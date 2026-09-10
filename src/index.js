@@ -488,17 +488,15 @@ async function handleHealth(env) {
 }
 
 // ---------- 路由 ----------
-const notFoundPage = () =>
+// 苹果风格错误页（浅色 · 与控制台一致）
+const errorPage = (code, title, desc) =>
   new Response(
-    `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>404 · HTML 托管舱</title><style>body{background:#0a0f0c;color:#d9e6de;font-family:ui-monospace,monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center;border:1px solid #1e2d24;padding:48px 64px}h1{color:#3dff8b;font-size:64px;margin:0 0 8px}p{color:#7d968a}a{color:#3dff8b}</style></head><body><div><h1>404</h1><p>未找到站点或文件</p><p><a href="/">← 返回托管舱</a></p></div></body></html>`,
-    { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${code} · 网页托管舱</title><style>body{background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;-webkit-font-smoothing:antialiased}div{text-align:center;padding:48px 40px;background:#fff;border-radius:24px;box-shadow:0 4px 24px rgba(0,0,0,.06);max-width:400px;margin:24px}h1{font-size:56px;margin:0 0 6px;letter-spacing:-.03em;background:linear-gradient(180deg,#1d1d1f 60%,#6e6e73);-webkit-background-clip:text;background-clip:text;color:transparent}p{color:#6e6e73;font-size:15px;line-height:1.6;margin:0 0 22px}a{display:inline-block;background:#0071e3;color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:11px 26px;border-radius:980px;transition:background .2s}a:hover{background:#0068d0}</style></head><body><div><h1>${code}</h1><p><b style="color:#1d1d1f">${title}</b><br>${desc}</p><a href="/">返回首页</a></div></body></html>`,
+    { status: code, headers: { "Content-Type": "text/html; charset=utf-8", ...(code === 410 ? { "Cache-Control": "no-store" } : {}) } }
   );
 
-const expiredPage = () =>
-  new Response(
-    `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>410 · HTML 托管舱</title><style>body{background:#0a0f0c;color:#d9e6de;font-family:ui-monospace,monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center;border:1px solid #1e2d24;padding:48px 64px}h1{color:#ffb454;font-size:64px;margin:0 0 8px}p{color:#7d968a}a{color:#3dff8b}</style></head><body><div><h1>410</h1><p>该站点已过期并被清理</p><p><a href="/">← 返回托管舱重新部署</a></p></div></body></html>`,
-    { status: 410, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }
-  );
+const notFoundPage = () => errorPage(404, "找不到这个网页", "它可能还没发布、名字写错了，或者已经过期下线。");
+const expiredPage = () => errorPage(410, "这个网页已过期", "它超出了保存时长并已自动下线。你可以回到首页重新发布。");
 
 // 解码 URL 路径分段并做安全校验（拒绝 ../ 穿越）
 function safeSegments(pathname) {
