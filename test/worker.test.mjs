@@ -58,7 +58,7 @@ const MIME_MAP = {
   js: "text/javascript; charset=utf-8", svg: "image/svg+xml", png: "image/png", json: "application/json; charset=utf-8",
 };
 const mockExt = (p) => p.slice(p.lastIndexOf(".") + 1);
-const state = { files: new Map(), treeStatus: 200 };
+const state = { files: new Map(), treeStatus: 200, serveOverride: null };
 
 state.files.set("sites/taken/index.html", "<h1>taken</h1>");
 
@@ -91,6 +91,14 @@ globalThis.fetch = async (input, init = {}) => {
       }
       const raw = state.files.get(path);
       if (raw == null) return new Response('{"message":"Not Found"}', { status: 404 });
+      // 模拟 GitHub 对 raw 媒体类型可能出现的各种异常 Content-Type / 响应体
+      const ov = state.serveOverride;
+      if (ov && ov.path === path) {
+        return new Response(ov.body !== undefined ? ov.body : raw, {
+          status: 200,
+          headers: { "content-type": ov.ct },
+        });
+      }
       return new Response(raw, { status: 200, headers: { "content-type": MIME_MAP[mockExt(path)] || "application/octet-stream" } });
     }
   }
@@ -346,6 +354,66 @@ await test("无元数据的旧站点视为长期有效：/taken/ 正常访问", 
   const r = await worker.fetch(req("/taken/"), ENV);
   assert.equal(r.status, 200);
   assert.equal(await r.text(), "<h1>taken</h1>");
+});
+
+// ---- Content-Type 回归测试：无论 GitHub 返回什么类型，.html 一律以 text/html 渲染 ----
+await test("GitHub 返回 application/octet-stream 时仍以 text/html 渲染", async () => {
+  state.serveOverride = { path: "sites/single/index.html", ct: "application/octet-stream" };
+  const r = await worker.fetch(req("/single/"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/html"));
+  assert.equal(await r.text(), "<h1>single</h1>");
+});
+
+await test("GitHub 回显 vnd.github.raw+json 类型时仍以 text/html 渲染", async () => {
+  state.serveOverride = { path: "sites/single/index.html", ct: "application/vnd.github.raw+json" };
+  const r = await worker.fetch(req("/single/"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/html"));
+  assert.equal(await r.text(), "<h1>single</h1>");
+});
+
+await test("GitHub 返回 text/plain 时 .html 仍以 text/html 渲染", async () => {
+  state.serveOverride = { path: "sites/single/index.html", ct: "text/plain; charset=utf-8" };
+  const r = await worker.fetch(req("/single/"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/html"));
+  assert.equal(await r.text(), "<h1>single</h1>");
+});
+
+await test("GitHub 返回 base64 JSON 信封时解码内容并以 text/html 渲染", async () => {
+  const raw = state.files.get("sites/single/index.html");
+  state.serveOverride = {
+    path: "sites/single/index.html",
+    ct: "application/json; charset=utf-8",
+    body: JSON.stringify({ name: "index.html", encoding: "base64", content: btoa(raw) }),
+  };
+  const r = await worker.fetch(req("/single/"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/html"));
+  assert.equal(await r.text(), "<h1>single</h1>");
+});
+
+await test(".json 文件原样以 application/json 返回（不解码）", async () => {
+  const r = await worker.fetch(req("/z5x/data.json"), ENV);
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("application/json"));
+  assert.equal(await r.text(), "{}");
+});
+
+await test("未知扩展名时参考 GitHub 返回的类型", async () => {
+  state.files.set("sites/single/blob.binx", "BINXDATA");
+  state.serveOverride = { path: "sites/single/blob.binx", ct: "application/x-custom" };
+  const r = await worker.fetch(req("/single/blob.binx"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "application/x-custom");
+  assert.equal(await r.text(), "BINXDATA");
+  state.files.delete("sites/single/blob.binx");
 });
 
 await test("未过期站点正常访问", async () => {

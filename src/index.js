@@ -257,14 +257,27 @@ async function getMeta(env, name) {
     const res = await fetch(url, {
       headers: {
         Authorization: "Bearer " + token,
-        Accept: "application/vnd.github.raw",
+        Accept: "application/vnd.github.raw+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "html-hosting-worker",
       },
       cf: { cacheTtl: 300, cacheEverything: true }, // 边缘缓存 5 分钟
     });
     if (!res.ok) return null;
-    const j = JSON.parse(await res.text());
+    let text = await res.text();
+    // raw 媒体类型未生效时，返回的是 base64 JSON 信封：先解码出真实内容
+    const ghCt = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (ghCt === "application/json") {
+      try {
+        const j = JSON.parse(text);
+        if (j && typeof j.content === "string" && j.encoding === "base64") {
+          text = atob(j.content.replace(/\s+/g, ""));
+        }
+      } catch {
+        return null;
+      }
+    }
+    const j = JSON.parse(text);
     return j && typeof j.expire_at === "number" ? j : null;
   } catch {
     return null;
@@ -356,7 +369,7 @@ async function serveFile(env, name, path, ctx) {
   const res = await fetch(url, {
     headers: {
       Authorization: "Bearer " + token,
-      Accept: "application/vnd.github.raw",
+      Accept: "application/vnd.github.raw+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "html-hosting-worker",
     },
@@ -365,13 +378,37 @@ async function serveFile(env, name, path, ctx) {
   if (res.status === 404) return notFoundPage();
   if (!res.ok) throw new UserError("回源 GitHub 失败" + (await ghErrorDetail(res)), 502);
 
-  // 优先透传 GitHub 的 Content-Type，缺失时按扩展名兜底
-  let ct = res.headers.get("content-type") || "";
-  if (!ct || ct === "application/octet-stream") ct = mimeFor(path);
-  else if (/^(text\/|image\/svg|application\/(json|javascript|xml))/.test(ct) && !ct.includes("charset")) {
-    ct += "; charset=utf-8";
+  const ghCt = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  const myMime = mimeFor(path);
+
+  // GitHub 对 raw 媒体类型可能返回 JSON 信封（base64 元数据）而非原始内容：解码出真实文件
+  let body = res.body;
+  if (ghCt === "application/json" && !myMime.startsWith("application/json")) {
+    const text = await res.text();
+    try {
+      const j = JSON.parse(text);
+      if (j && typeof j.content === "string" && j.encoding === "base64") {
+        const bin = atob(j.content.replace(/\s+/g, ""));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        body = bytes;
+      } else {
+        body = text;
+      }
+    } catch {
+      body = text;
+    }
   }
-  return new Response(res.body, {
+
+  // Content-Type 一律以本地扩展名映射为准：GitHub 对 raw 请求会返回
+  // application/octet-stream / vnd.github.* 等类型，直接透传会导致浏览器下载而非渲染
+  let ct = myMime;
+  if (ct === "application/octet-stream" && ghCt && ghCt !== "application/json" && ghCt !== "application/octet-stream" && !ghCt.startsWith("application/vnd.github")) {
+    // 仅当扩展名未知时参考 GitHub 返回的类型
+    ct = /^(text\/|image\/svg|application\/(javascript|xml))/.test(ghCt) ? ghCt + "; charset=utf-8" : ghCt;
+  }
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": ct,
