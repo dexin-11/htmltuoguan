@@ -202,7 +202,7 @@ await test("项目名重复 → 409", async () => {
 });
 
 await test("非法项目名 → 400（空格 / 保留字 / 前导连字符 / 超长）", async () => {
-  for (const bad of ["bad name", "api", "-x", "a".repeat(41), ""]) {
+  for (const bad of ["bad name", "api", "admin", "-x", "a".repeat(41), ""]) {
     const r = await worker.fetch(req("/api/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

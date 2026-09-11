@@ -621,7 +621,7 @@ function refreshNameStatus(){
     setStatus(s, '名字格式不对：只能用小写字母、数字和连字符，开头结尾不能是连字符', 'bad');
     pv.hidden = true; return;
   }
-  if(v === 'api'){ setStatus(s, '这个名字被系统保留了，换一个吧', 'bad'); pv.hidden = true; return; }
+  if(v === 'api' || v === 'admin'){ setStatus(s, '这个名字被系统保留了，换一个吧', 'bad'); pv.hidden = true; return; }
   if(takenNames.indexOf(v) >= 0){ setStatus(s, '这个名字已经被占用了，换一个试试', 'bad'); return; }
   setStatus(s, '这个名字可以用', 'ok');
 }
