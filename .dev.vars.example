@@ -3,3 +3,6 @@ GH_TOKEN=ghp_your_token_here
 GH_OWNER=your-github-username
 GH_REPO=your-repo-name
 GH_BRANCH=main
+
+# 管理后台密码（访问 /admin 时输入；生产环境请用 wrangler secret put ADMIN_PASSWORD 设置）
+ADMIN_PASSWORD=change-me

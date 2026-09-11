@@ -2,16 +2,19 @@
 // 图形化自助部署：上传 ZIP / HTML → 存入 GitHub 仓库 sites/{项目名}/ → 通过 /{项目名}/ 公开访问
 
 import { UI_HTML, FAVICON_SVG } from "./ui.js";
+import { ADMIN_HTML } from "./admin.js";
 
 // ---------- 常量与限制 ----------
 const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/; // 1-40 位，小写字母/数字/连字符
-const RESERVED = new Set(["api"]); // 系统保留的项目名
+const RESERVED = new Set(["api", "admin"]); // 系统保留的项目名
 const MAX_FILES = 200; // 单个项目最多文件数
 const MAX_FILE_BYTES = 3 * 1024 * 1024; // 单文件上限 3MB
 const MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 项目总大小上限 10MB
-const META_FILE = ".bay.json"; // 站点元数据文件（记录有效期）
+const META_FILE = ".bay.json"; // 站点元数据文件（记录有效期与上传 IP）
+const BLACKLIST_FILE = ".bay-blacklist.json"; // IP 黑名单文件（仓库根目录）
 const EXPIRY_DAYS = { "3d": 3, "7d": 7, "30d": 30 }; // 有效期选项：3 天 / 7 天 / 1 个月
 const DEFAULT_EXPIRY = "7d";
+const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 
 // ---------- 通用工具 ----------
 class UserError extends Error {
@@ -249,39 +252,30 @@ function sitesFromTree(blobs) {
   return sites;
 }
 
-// 读取站点元数据（有效期）；无元数据或读取失败视为长期有效
+// 读取站点元数据（有效期/上传IP）；无元数据或读取失败视为长期有效
 async function getMeta(env, name) {
-  const { api, owner, repo, branch, token } = ghConfig(env);
-  const url = `${api}/repos/${owner}/${repo}/contents/${encodePath(`sites/${name}/${META_FILE}`)}?ref=${encodeURIComponent(branch)}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/vnd.github.raw+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "html-hosting-worker",
-      },
-      cf: { cacheTtl: 300, cacheEverything: true }, // 边缘缓存 5 分钟
-    });
-    if (!res.ok) return null;
-    let text = await res.text();
-    // raw 媒体类型未生效时，返回的是 base64 JSON 信封：先解码出真实内容
-    const ghCt = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    if (ghCt === "application/json") {
-      try {
-        const j = JSON.parse(text);
-        if (j && typeof j.content === "string" && j.encoding === "base64") {
-          text = atob(j.content.replace(/\s+/g, ""));
-        }
-      } catch {
-        return null;
-      }
-    }
-    const j = JSON.parse(text);
+    const f = await readRepoFile(env, `sites/${name}/${META_FILE}`);
+    if (!f) return null;
+    const j = JSON.parse(f.text);
     return j && typeof j.expire_at === "number" ? j : null;
   } catch {
     return null;
   }
+}
+
+// 读取站点元数据（含文件 sha，供更新）
+async function getMetaWithSha(env, name) {
+  const f = await readRepoFile(env, `sites/${name}/${META_FILE}`);
+  if (!f) return { meta: null, sha: null };
+  let meta = null;
+  try {
+    const j = JSON.parse(f.text);
+    if (j && typeof j.expire_at === "number") meta = j;
+  } catch {
+    /* 视为无元数据 */
+  }
+  return { meta, sha: f.sha };
 }
 
 const isExpired = (meta, now = Date.now()) => !!meta && meta.expire_at <= now;
@@ -327,23 +321,103 @@ async function handleListSites(env, ctx) {
   return { sites: out };
 }
 
-// 写入单个文件到仓库
-async function putFile(env, sitePath, bytes, message) {
+// 写入单个文件到仓库；sha 存在则更新（否则创建）
+async function putFile(env, sitePath, bytes, message, sha) {
   const { owner, repo, branch } = ghConfig(env);
+  const body = { message, branch, content: toBase64(bytes) };
+  if (sha) body.sha = sha;
   const res = await ghFetch(env, `/repos/${owner}/${repo}/contents/${encodePath(sitePath)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, branch, content: toBase64(bytes) }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     // 并发竞态：文件已存在但未提供 sha 时 GitHub 返回 422
     if (res.status === 422 || res.status === 409) {
-      throw new UserError("项目名已被占用（检测到写入冲突）", 409);
+      throw new UserError("写入冲突：文件已存在（需要 sha 更新）或项目名已被占用", 409);
     }
     if (res.status === 401) throw new UserError("GitHub Token 无效或未授权 (401)，请检查 GH_TOKEN", 502);
     if (res.status === 403) throw new UserError("GitHub 拒绝写入 (403)：Token 权限不足或触发限流", 502);
     throw new UserError("写入 GitHub 失败" + (await ghErrorDetail(res)), 502);
   }
+}
+
+// 读取仓库文件（JSON 模式，返回内容与 sha）；不存在返回 null
+async function readRepoFile(env, path) {
+  const { api, owner, repo, branch, token } = ghConfig(env);
+  const url = `${api}/repos/${owner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(branch)}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: "Bearer " + token,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "html-hosting-worker",
+    },
+    cf: { cacheEverything: false },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new UserError("读取仓库文件失败" + (await ghErrorDetail(res)), 502);
+  const j = await res.json();
+  let text;
+  if (j.encoding === "base64") {
+    const bin = atob(j.content.replace(/\s+/g, ""));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    text = new TextDecoder().decode(bytes);
+  } else {
+    text = j.content || "";
+  }
+  return { text, sha: j.sha };
+}
+
+// 写文本文件；sha 存在则更新
+async function writeRepoFile(env, path, content, message, sha) {
+  await putFile(env, path, new TextEncoder().encode(content), message, sha);
+}
+
+// 获取上传者 IP（优先 Cloudflare 连接 IP）
+function clientIP(request) {
+  const cf = request.headers.get("cf-connecting-ip");
+  if (cf) return cf;
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  return null;
+}
+
+// ---------- IP 黑名单 ----------
+async function getBlacklist(env) {
+  try {
+    const f = await readRepoFile(env, BLACKLIST_FILE);
+    if (!f) return { entries: [], sha: null };
+    const j = JSON.parse(f.text);
+    return { entries: Array.isArray(j.entries) ? j.entries : [], sha: f.sha };
+  } catch {
+    return { entries: [], sha: null };
+  }
+}
+
+async function saveBlacklist(env, entries, sha) {
+  await writeRepoFile(
+    env,
+    BLACKLIST_FILE,
+    JSON.stringify({ v: 1, updated_at: Date.now(), entries }),
+    "admin(html-hosting): 更新 IP 黑名单",
+    sha
+  );
+}
+
+function isValidIp(s) {
+  if (IPV4_RE.test(s)) return s.split(".").every((o) => Number(o) <= 255);
+  // IPv6（含压缩形式与 zone 后缀）
+  return s.includes(":") && /^[0-9a-fA-F:.%]+$/.test(s);
+}
+
+// 管理端鉴权
+function adminCheck(env, request) {
+  const pwd = env.ADMIN_PASSWORD;
+  if (!pwd) throw new UserError("管理密码未配置：请设置环境变量 ADMIN_PASSWORD", 500);
+  const given = request.headers.get("x-admin-token") || "";
+  if (given !== pwd) throw new UserError("密码错误或未登录", 401);
 }
 
 // 从仓库读取并回源渲染站点文件；过期站点返回 410 并异步清理
@@ -456,6 +530,15 @@ async function handleUpload(request, env) {
   name = validateName(name);
   if (!(expiry in EXPIRY_DAYS)) throw new UserError("有效期选项不合法（可选：3d / 7d / 30d）");
 
+  // ---- 黑名单检查（按上传者 IP） ----
+  const ip = clientIP(request);
+  if (ip) {
+    const bl = await getBlacklist(env);
+    if (bl.entries.some((e) => String(e.ip).toLowerCase() === ip.toLowerCase())) {
+      throw new UserError("你的 IP 已被加入黑名单，无法发布", 403);
+    }
+  }
+
   // ---- 解析出待写入文件（始终保证根上有 index.html） ----
   let files; // [{path, bytes}]
   if (file) {
@@ -500,12 +583,114 @@ async function handleUpload(request, env) {
     await putFile(env, `sites/${name}/${f.path}`, f.bytes, `deploy(html-hosting): ${name} (${i + 1}/${files.length}) ${f.path}`);
   }
 
-  // ---- 写入有效期元数据 ----
+  // ---- 写入有效期元数据（含上传者 IP） ----
   const now = Date.now();
-  const meta = JSON.stringify({ v: 1, created_at: now, expire_at: now + EXPIRY_DAYS[expiry] * 86400000 });
+  const meta = JSON.stringify({
+    v: 1,
+    created_at: now,
+    expire_at: now + EXPIRY_DAYS[expiry] * 86400000,
+    ...(ip ? { uploader_ip: ip } : {}),
+  });
   await putFile(env, `sites/${name}/${META_FILE}`, new TextEncoder().encode(meta), `meta(html-hosting): ${name} 有效期 ${expiry}`);
 
   return json({ ok: true, name, url: `/${name}/`, files: files.length, expiry_days: EXPIRY_DAYS[expiry] });
+}
+
+// ---------- 管理端 API ----------
+// 列出全部项目（含上传 IP 与有效期）
+async function handleAdminSites(env, request) {
+  adminCheck(env, request);
+  const blobs = await getTree(env);
+  if (blobs === null) throw new UserError("仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置", 502);
+  const sites = sitesFromTree(blobs);
+  const out = [];
+  for (const s of sites.values()) {
+    const meta = await getMeta(env, s.name);
+    out.push({
+      name: s.name,
+      files: s.files,
+      size: s.size,
+      expire_at: meta ? meta.expire_at : null,
+      uploader_ip: meta && meta.uploader_ip ? meta.uploader_ip : null,
+    });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return json({ ok: true, sites: out });
+}
+
+// 删除项目（整个目录）
+async function handleAdminDelete(env, request, name) {
+  adminCheck(env, request);
+  if (!NAME_RE.test(name)) throw new UserError("项目名不合法", 400);
+  const blobs = await getTree(env);
+  const s = sitesFromTree(blobs || []).get(name);
+  if (!s) throw new UserError("项目不存在", 404);
+  await deleteSite(env, name, s.paths);
+  return json({ ok: true, name });
+}
+
+// 续期：把过期时间向后顺延 days 天（已过期则从现在算起）
+async function handleAdminRenew(env, request, name) {
+  adminCheck(env, request);
+  if (!NAME_RE.test(name)) throw new UserError("项目名不合法", 400);
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    /* 缺省 */
+  }
+  const days = Number(body.days);
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new UserError("续期天数需为 1-365 的整数", 400);
+
+  const blobs = await getTree(env);
+  const s = sitesFromTree(blobs || []).get(name);
+  if (!s) throw new UserError("项目不存在", 404);
+
+  const { meta, sha } = await getMetaWithSha(env, name);
+  const now = Date.now();
+  const base = meta ? Math.max(meta.expire_at, now) : now;
+  const next = { ...(meta || {}), v: 1, expire_at: base + days * 86400000, renewed_at: now };
+  await writeRepoFile(env, `sites/${name}/${META_FILE}`, JSON.stringify(next), `admin(html-hosting): ${name} 续期 ${days} 天`, sha || undefined);
+  return json({ ok: true, name, expire_at: next.expire_at, days });
+}
+
+// 黑名单：读取
+async function handleBlacklistGet(env, request) {
+  adminCheck(env, request);
+  const bl = await getBlacklist(env);
+  return json({ ok: true, entries: bl.entries });
+}
+
+// 黑名单：添加
+async function handleBlacklistAdd(env, request) {
+  adminCheck(env, request);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new UserError("请求体不是合法的 JSON");
+  }
+  const ip = (body.ip || "").trim().toLowerCase();
+  if (!ip) throw new UserError("请填写要拉黑的 IP", 400);
+  if (!isValidIp(ip)) throw new UserError("IP 格式不正确", 400);
+  const note = (body.note || "").trim().slice(0, 100);
+  const bl = await getBlacklist(env);
+  if (!bl.entries.some((e) => e.ip === ip)) {
+    bl.entries.push({ ip, note, added_at: Date.now() });
+  }
+  await saveBlacklist(env, bl.entries, bl.sha);
+  return json({ ok: true, ip });
+}
+
+// 黑名单：移除
+async function handleBlacklistRemove(env, request, ip) {
+  adminCheck(env, request);
+  ip = ip.toLowerCase();
+  const bl = await getBlacklist(env);
+  const next = bl.entries.filter((e) => e.ip !== ip);
+  if (next.length === bl.entries.length) throw new UserError("该 IP 不在黑名单中", 404);
+  await saveBlacklist(env, next, bl.sha);
+  return json({ ok: true, ip });
 }
 
 async function handleHealth(env) {
@@ -570,6 +755,11 @@ export default {
           headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
         });
       }
+      if (method === "GET" && (pathname === "/admin" || pathname === "/admin/")) {
+        return new Response(ADMIN_HTML, {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
 
       // ---- API ----
       if (pathname === "/api/sites" && (method === "GET" || method === "HEAD")) {
@@ -582,6 +772,34 @@ export default {
       if (pathname === "/api/health" && (method === "GET" || method === "HEAD")) {
         return await handleHealth(env);
       }
+
+      // ---- 管理端 API ----
+      if (pathname.startsWith("/api/admin/")) {
+        const rest = pathname.slice("/api/admin/".length);
+        if (rest === "sites" && (method === "GET" || method === "HEAD")) {
+          return await handleAdminSites(env, request);
+        }
+        if (rest === "blacklist" && (method === "GET" || method === "HEAD")) {
+          return await handleBlacklistGet(env, request);
+        }
+        if (rest === "blacklist" && method === "POST") {
+          return await handleBlacklistAdd(env, request);
+        }
+        let m = rest.match(/^sites\/([^/]+)$/);
+        if (m && method === "DELETE") {
+          return await handleAdminDelete(env, request, decodeURIComponent(m[1]));
+        }
+        m = rest.match(/^sites\/([^/]+)\/renew$/);
+        if (m && method === "POST") {
+          return await handleAdminRenew(env, request, decodeURIComponent(m[1]));
+        }
+        m = rest.match(/^blacklist\/(.+)$/);
+        if (m && method === "DELETE") {
+          return await handleBlacklistRemove(env, request, decodeURIComponent(m[1]));
+        }
+        return json({ ok: false, error: "未知的管理接口" }, 404);
+      }
+
       if (pathname === "/api" || pathname.startsWith("/api/")) {
         return json({ ok: false, error: "未知的 API 路径" }, 404);
       }

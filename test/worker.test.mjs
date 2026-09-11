@@ -91,15 +91,23 @@ globalThis.fetch = async (input, init = {}) => {
       }
       const raw = state.files.get(path);
       if (raw == null) return new Response('{"message":"Not Found"}', { status: 404 });
-      // 模拟 GitHub 对 raw 媒体类型可能出现的各种异常 Content-Type / 响应体
-      const ov = state.serveOverride;
-      if (ov && ov.path === path) {
-        return new Response(ov.body !== undefined ? ov.body : raw, {
-          status: 200,
-          headers: { "content-type": ov.ct },
-        });
+      const accept = headers["Accept"] || headers.accept || "";
+      // 模拟 GitHub raw 媒体类型可能出现的各种异常 Content-Type / 响应体（serveFile 使用）
+      if (accept.includes("vnd.github.raw")) {
+        const ov = state.serveOverride;
+        if (ov && ov.path === path) {
+          return new Response(ov.body !== undefined ? ov.body : raw, {
+            status: 200,
+            headers: { "content-type": ov.ct },
+          });
+        }
+        return new Response(raw, { status: 200, headers: { "content-type": MIME_MAP[mockExt(path)] || "application/octet-stream" } });
       }
-      return new Response(raw, { status: 200, headers: { "content-type": MIME_MAP[mockExt(path)] || "application/octet-stream" } });
+      // 模拟 GitHub JSON 信封（readRepoFile 使用 application/vnd.github+json）
+      return new Response(
+        JSON.stringify({ name: path.split("/").pop(), path, sha: "sha-" + path, content: btoa(raw), encoding: "base64" }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
     }
   }
   if (url.pathname === "/user") return new Response("{}", { status: 200 });
@@ -504,6 +512,140 @@ await test("GET /api/sites 反映全部新上传项目", async () => {
   for (const n of ["taken", "pasted1", "single", "z1x", "z2x", "z5x", "exp3"]) assert.ok(names.includes(n), n);
   const z1 = j.sites.find((s) => s.name === "z1x");
   assert.equal(z1.files, 5); // 4 个用户文件 + .bay.json 元数据
+});
+
+// ── 管理后台 / IP 黑名单 / 上传 IP 记录 ──
+const ADMIN_ENV = { ...ENV, ADMIN_PASSWORD: "s3cret" };
+const AUTH = { "X-Admin-Token": "s3cret" };
+
+await test("GET /admin 返回管理后台页面", async () => {
+  const r = await worker.fetch(req("/admin"), ADMIN_ENV);
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").includes("text/html"));
+  assert.ok((await r.text()).includes("管理后台"));
+});
+
+await test("管理 API 未带密码 → 401", async () => {
+  const r = await worker.fetch(req("/api/admin/sites"), ADMIN_ENV);
+  assert.equal(r.status, 401);
+});
+
+await test("管理 API 密码错误 → 401", async () => {
+  const r = await worker.fetch(req("/api/admin/sites", { headers: { "X-Admin-Token": "wrong" } }), ADMIN_ENV);
+  assert.equal(r.status, 401);
+});
+
+await test("ADMIN_PASSWORD 未配置 → 500 并提示", async () => {
+  const r = await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ENV);
+  assert.equal(r.status, 500);
+  assert.ok((await r.json()).error.includes("ADMIN_PASSWORD"));
+});
+
+await test("管理 API 密码正确 → 200 列出站点", async () => {
+  const j = await (await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.ok(j.sites.some((s) => s.name === "taken"));
+});
+
+await test("上传记录上传者 IP（cf-connecting-ip）", async () => {
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.9" },
+    body: JSON.stringify({ name: "ip-site", html: "<h1>ip</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 200);
+  const meta = JSON.parse(state.files.get("sites/ip-site/.bay.json"));
+  assert.equal(meta.uploader_ip, "198.51.100.9");
+});
+
+await test("管理列表返回上传 IP", async () => {
+  const j = await (await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ADMIN_ENV)).json();
+  const s = j.sites.find((x) => x.name === "ip-site");
+  assert.ok(s);
+  assert.equal(s.uploader_ip, "198.51.100.9");
+});
+
+await test("IP 拉黑后上传被拒绝 → 403", async () => {
+  const j = await (await worker.fetch(req("/api/admin/blacklist", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ ip: "198.51.100.9", note: "test" }),
+  }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.9" },
+    body: JSON.stringify({ name: "banned2", html: "<h1>x</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 403);
+  assert.ok((await r.json()).error.includes("黑名单"));
+});
+
+await test("黑名单读取 / 移除", async () => {
+  const j = await (await worker.fetch(req("/api/admin/blacklist", { headers: AUTH }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.ok(j.entries.some((e) => e.ip === "198.51.100.9"));
+  const d = await (await worker.fetch(req("/api/admin/blacklist/198.51.100.9", {
+    method: "DELETE",
+    headers: AUTH,
+  }), ADMIN_ENV)).json();
+  assert.equal(d.ok, true);
+  const j2 = await (await worker.fetch(req("/api/admin/blacklist", { headers: AUTH }), ADMIN_ENV)).json();
+  assert.ok(!j2.entries.some((e) => e.ip === "198.51.100.9"));
+});
+
+await test("黑名单 IP 格式非法 → 400", async () => {
+  const r = await worker.fetch(req("/api/admin/blacklist", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ ip: "not-an-ip" }),
+  }), ADMIN_ENV);
+  assert.equal(r.status, 400);
+});
+
+await test("管理续期：过期时间向后顺延", async () => {
+  const j = await (await worker.fetch(req("/api/admin/sites/ip-site/renew", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ days: 30 }),
+  }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(j.days, 30);
+  const meta = JSON.parse(state.files.get("sites/ip-site/.bay.json"));
+  assert.ok(meta.expire_at > Date.now() + 29 * 86400000);
+});
+
+await test("续期天数非法 → 400", async () => {
+  const r = await worker.fetch(req("/api/admin/sites/taken/renew", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ days: 0 }),
+  }), ADMIN_ENV);
+  assert.equal(r.status, 400);
+});
+
+await test("续期不存在的站点 → 404", async () => {
+  const r = await worker.fetch(req("/api/admin/sites/no-such-site/renew", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ days: 7 }),
+  }), ADMIN_ENV);
+  assert.equal(r.status, 404);
+});
+
+await test("管理删除站点", async () => {
+  const j = await (await worker.fetch(req("/api/admin/sites/ip-site", {
+    method: "DELETE",
+    headers: AUTH,
+  }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(state.files.has("sites/ip-site/index.html"), false);
+  assert.equal(state.files.has("sites/ip-site/.bay.json"), false);
+});
+
+await test("管理删除不存在的站点 → 404", async () => {
+  const r = await worker.fetch(req("/api/admin/sites/no-such-site", { method: "DELETE", headers: AUTH }), ADMIN_ENV);
+  assert.equal(r.status, 404);
 });
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败\n`);
