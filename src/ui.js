@@ -155,8 +155,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
   width:100%;min-height:230px;resize:vertical;background:var(--fill);border:1.5px solid transparent;
   border-radius:var(--r-md);padding:14px 16px;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   font-size:13.5px;line-height:1.7;color:var(--text);transition:all .2s;
+  -webkit-user-select:text;user-select:text;-webkit-touch-callout:default;
 }
 .paste-area:focus{outline:none;background:#fff;border-color:var(--blue);box-shadow:0 0 0 4px rgba(0,113,227,.12)}
+
+/* 粘贴剪贴板按钮（移动端显示：部分手机键盘粘贴会不全、内嵌浏览器长按无粘贴项） */
+.paste-btn{
+  display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:10px;
+  background:var(--blue-soft);color:var(--blue);font-size:14.5px;font-weight:600;
+  padding:11px;border-radius:980px;transition:all .2s;cursor:pointer;
+}
+.paste-btn:hover{background:var(--blue-soft);filter:brightness(.96)}
+.paste-btn:disabled{opacity:.55;cursor:wait}
 
 /* 输入框 */
 .text-input{
@@ -398,6 +408,10 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
 
         <div id="pane-paste">
           <textarea class="paste-area" id="paste-area" spellcheck="false" placeholder="把 HTML 代码粘贴到这里，例如：&#10;&#10;&lt;!DOCTYPE html&gt;&#10;&lt;html&gt;&#10;  &lt;body&gt;&lt;h1&gt;你好，世界&lt;/h1&gt;&lt;/body&gt;&#10;&lt;/html&gt;"></textarea>
+          <button type="button" class="paste-btn" id="paste-btn" hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A2.5 2.5 0 0 1 2 12.5v-8A2.5 2.5 0 0 1 4.5 2h8A2.5 2.5 0 0 1 15 4.5V5"/></svg>
+            <span>粘贴剪贴板内容</span>
+          </button>
           <p class="block-help">整段代码会保存为一个网页，自动作为首页。</p>
         </div>
       </div>
@@ -787,9 +801,31 @@ fetch('/api/health')
 refreshNameStatus();
 loadSites();
 
-/* 手机端：粘贴框提示用系统"长按粘贴"，避免触发输入法的粘贴面板 */
+/* 手机端：提供"粘贴剪贴板"按钮——部分手机键盘的粘贴会粘贴不全，内嵌浏览器长按也可能没有粘贴项 */
 if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstart' in window && window.matchMedia('(max-width: 900px)').matches)){
-  $('paste-area').placeholder = '请长按粘贴，不要使用输入法的粘贴';
+  $('paste-area').placeholder = '请点击下方按钮粘贴完整代码（键盘上的粘贴会粘贴不全）';
+  var pasteBtn = $('paste-btn');
+  pasteBtn.hidden = false;
+  pasteBtn.onclick = function(){
+    var b = this, o = b.innerHTML;
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-color:rgba(0,113,227,.35);border-top-color:#0071e3"></span><span>正在读取剪贴板…</span>';
+    navigator.clipboard.readText().then(function(t){
+      if(!t || !t.trim()){
+        setErr($('msg'), '剪贴板是空的：请先复制网页代码，再回来点「粘贴剪贴板内容」。');
+        return;
+      }
+      var ta = $('paste-area');
+      ta.value = t;
+      ta.focus();
+      setErr($('msg'), '');
+    }).catch(function(){
+      setErr($('msg'), '读取剪贴板失败（浏览器权限限制）：请改用系统剪贴板，长按粘贴框选择"粘贴"。');
+    }).finally(function(){
+      b.disabled = false;
+      b.innerHTML = o;
+    });
+  };
 }
 })();
 </script>
