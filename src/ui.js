@@ -371,11 +371,11 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
       <div class="block">
         <div class="block-head"><span class="block-num">1</span><span class="block-title">选择网页文件</span></div>
         <div class="seg" role="tablist">
-          <button type="button" class="seg-btn active" id="tab-file" role="tab" aria-selected="true">上传文件</button>
-          <button type="button" class="seg-btn" id="tab-paste" role="tab" aria-selected="false">粘贴代码</button>
+          <button type="button" class="seg-btn" id="tab-file" role="tab" aria-selected="false">上传文件</button>
+          <button type="button" class="seg-btn active" id="tab-paste" role="tab" aria-selected="true">粘贴代码</button>
         </div>
 
-        <div id="pane-file">
+        <div id="pane-file" class="hidden">
           <label class="dropzone" id="dropzone" for="file-input">
             <input type="file" id="file-input" accept=".zip,.html,.htm" hidden>
             <span class="dz-icon">
@@ -396,7 +396,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
           </div>
         </div>
 
-        <div id="pane-paste" class="hidden">
+        <div id="pane-paste">
           <textarea class="paste-area" id="paste-area" spellcheck="false" placeholder="把 HTML 代码粘贴到这里，例如：&#10;&#10;&lt;!DOCTYPE html&gt;&#10;&lt;html&gt;&#10;  &lt;body&gt;&lt;h1&gt;你好，世界&lt;/h1&gt;&lt;/body&gt;&#10;&lt;/html&gt;"></textarea>
           <p class="block-help">整段代码会保存为一个网页，自动作为首页。</p>
         </div>
@@ -499,7 +499,7 @@ var NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/;
 var AVATAR_COLORS = ['#0071e3','#5856d6','#ff2d55','#ff9500','#30b0c7','#34c759','#af52de','#ff6b22'];
 var takenNames = [];
 var currentFile = null;
-var tab = 'file';
+var tab = 'paste';
 var expiry = '7d';
 var busy = false;
 var $ = function(id){ return document.getElementById(id); };
@@ -786,6 +786,11 @@ fetch('/api/health')
 
 refreshNameStatus();
 loadSites();
+
+/* 手机端：粘贴框提示用系统"长按粘贴"，避免触发输入法的粘贴面板 */
+if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstart' in window && window.matchMedia('(max-width: 900px)').matches)){
+  $('paste-area').placeholder = '请长按粘贴，不要使用输入法的粘贴';
+}
 })();
 </script>
 </body>
