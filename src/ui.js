@@ -605,14 +605,14 @@ function setFile(f){
   $('file-chip').classList.remove('hidden');
   setErr($('msg'), '');
 
-  // 选择文件后即开始上传：切到"文件"页签，未填名字时按文件名自动生成项目名
+  // 选择文件后：切到"文件"页签，未填名字时按文件名自动生成项目名（可修改），
+  // 但不自动上传——由用户确认自定义项目名后手动点击"发布我的网页"
   switchTab('file');
   var nameInput = $('name-input');
   if(!nameInput.value.trim()){
     var slug = slugFromName(f.name);
     if(slug){ nameInput.value = slug; refreshNameStatus(); }
   }
-  publish();
 }
 fi.onchange = function(){ setFile(this.files[0]); };
 $('chip-remove').onclick = function(){ currentFile = null; fi.value = ''; $('file-chip').classList.add('hidden'); };
