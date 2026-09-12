@@ -257,17 +257,23 @@ function sitesFromTree(blobs) {
   return sites;
 }
 
-// 读取站点元数据（有效期/上传IP）；无元数据或读取失败视为长期有效
-// 元数据仅在发布/续期/删除时改变，故走边缘缓存，避免每次访问都回源 GitHub
+// 读取站点元数据（有效期/上传IP）；无元数据或读取失败时按默认有效期处理，
+// 避免历史遗留站点被当作"永久"长期保留。元数据仅在发布/续期/删除时改变，
+// 故走边缘缓存，避免每次访问都回源 GitHub
 async function getMeta(env, name) {
   try {
     const f = await readRepoFile(env, `sites/${name}/${META_FILE}`, true);
-    if (!f) return null;
-    const j = JSON.parse(f.text);
-    return j && typeof j.expire_at === "number" ? j : null;
+    if (f) {
+      const j = JSON.parse(f.text);
+      if (j && typeof j.expire_at === "number") return j;
+    }
   } catch {
-    return null;
+    /* 无元数据或读取失败：按默认有效期处理 */
   }
+  // 站点缺少元数据（如本期功能上线前上传的历史站点）时，从当前时间起算补一个默认有效期，
+  // 使其不再以"永久"形式存在，到期后按常规流程下线清理
+  const now = Date.now();
+  return { v: 1, created_at: now, expire_at: now + EXPIRY_DAYS[DEFAULT_EXPIRY] * 86400000 };
 }
 
 // 读取站点元数据（含文件 sha，供更新）

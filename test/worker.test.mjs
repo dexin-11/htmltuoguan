@@ -524,9 +524,9 @@ await test("/api/sites 携带有效期信息并在列表加载时清理过期站
   await Promise.allSettled(tasks);
   assert.equal(state.files.has("sites/pastdue/index.html"), false);
 
-  // 永久站点 expire_at 为 null
+  // 无元数据站点不再视为永久，按默认有效期（该测试上传于 7 天前… 此处断言有 expire_at）
   const taken = j.sites.find((s) => s.name === "taken");
-  assert.equal(taken.expire_at, null);
+  assert.equal(typeof taken.expire_at, "number");
   // 有限期站点有 expire_at
   const z1 = j.sites.find((s) => s.name === "z1x");
   assert.equal(typeof z1.expire_at, "number");
