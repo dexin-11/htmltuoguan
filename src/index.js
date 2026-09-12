@@ -335,12 +335,14 @@ async function siteExists(env, name) {
   return res.status !== 404;
 }
 
-// 项目列表接口：附带有效期信息，顺带异步清理已过期站点
-async function handleListSites(env, ctx) {
+// 项目列表接口：附带有效期信息，顺带异步清理已过期站点。
+// 普通访问仅返回当前访问 IP 上传的站点；拿不到客户端 IP（如本地开发/代理未透传）时返回全部，保证本地调试可用
+async function handleListSites(env, ctx, request) {
   const blobs = await getTree(env);
   if (blobs === null) {
     return { sites: [], warning: "仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置" };
   }
+  const currentIp = clientIP(request);
   const sites = sitesFromTree(blobs);
   const out = [];
   const expired = [];
@@ -350,14 +352,19 @@ async function handleListSites(env, ctx) {
     [...sites.values()].map(async (s) => {
       const meta = await getMeta(env, s.name);
       const item = { name: s.name, files: s.files, size: s.size, expire_at: meta ? meta.expire_at : null };
+      const uploader_ip = meta && meta.uploader_ip ? meta.uploader_ip : null;
       if (isExpired(meta, now)) {
         item.expired = true;
-        return { item, s, expired: true };
+        return { item, s, expired: true, uploader_ip };
       }
-      return { item, s, expired: false };
+      return { item, s, expired: false, uploader_ip };
     })
   );
   for (const r of results) {
+    // 能识别访问 IP 时，只展示该 IP 上传的站点（含无 uploader_ip 的历史站点一并隐藏）
+    if (currentIp && (!r.uploader_ip || r.uploader_ip.toLowerCase() !== currentIp.toLowerCase())) {
+      continue;
+    }
     out.push(r.item);
     if (r.expired) expired.push(r.s);
   }
@@ -1032,7 +1039,7 @@ export default {
 
       // ---- API ----
       if (pathname === "/api/sites" && (method === "GET" || method === "HEAD")) {
-        const { sites, warning } = await handleListSites(env, ctx);
+        const { sites, warning } = await handleListSites(env, ctx, request);
         return json({ ok: true, sites, ...(warning ? { warning } : {}) });
       }
       if (pathname === "/api/upload" && method === "POST") {
