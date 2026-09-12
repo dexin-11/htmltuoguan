@@ -45,6 +45,12 @@ with zipfile.ZipFile(z("z7.zip"), "w", zipfile.ZIP_DEFLATED) as f:
     f.writestr("index.html", "<h1>z7</h1>")
     for i in range(4):
         f.writestr("part%d.bin" % i, bytes(2 * 1024 * 1024 + 600 * 1024))
+
+with zipfile.ZipFile(z("z8.zip"), "w", zipfile.ZIP_DEFLATED) as f:
+    f.writestr("index.html", "<h1>z8-many</h1>")
+    for i in range(50):
+        f.writestr("f%02d.txt" % i, "data %d" % i)
+
 print("fixtures ok")
 `;
 const pyPath = join(tmp, "mkfixtures.py");
@@ -69,11 +75,33 @@ globalThis.fetch = async (input, init = {}) => {
   const auth = headers["Authorization"] || headers.Authorization;
 
   if (url.pathname.startsWith("/repos/")) {
+    state.gitCalls = (state.gitCalls || 0) + 1;
     assert.ok(auth === "Bearer t", "GitHub 请求必须携带 Authorization 头");
     if (url.pathname === "/repos/o/r/git/trees/main") {
       if (state.treeStatus === 404) return new Response("{}", { status: 404 });
       const tree = [...state.files.keys()].map((p) => ({ path: p, type: "blob", size: state.files.get(p).length, sha: "sha-" + p }));
       return new Response(JSON.stringify({ tree }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    // 批量写入（commitFiles）：refs → head commit → 创建树 → 创建提交 → 推进分支
+    if (url.pathname === "/repos/o/r/git/refs/heads/main") {
+      return new Response(JSON.stringify({ object: { type: "commit", sha: "HEAD-commit" } }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname === "/repos/o/r/git/commits/HEAD-commit") {
+      return new Response(JSON.stringify({ tree: { sha: "ROOT-tree" } }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname === "/repos/o/r/git/trees" && method === "POST") {
+      const body = JSON.parse(init.body);
+      for (const e of body.tree) state.files.set(e.path, atob(e.content));
+      return new Response(JSON.stringify({ sha: "TREE-new" }), { status: 201, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname === "/repos/o/r/git/commits" && method === "POST") {
+      JSON.parse(init.body); // message / tree / parents 结构校验
+      return new Response(JSON.stringify({ sha: "COMMIT-new" }), { status: 201, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname === "/repos/o/r/git/refs/heads/main" && method === "PATCH") {
+      const body = JSON.parse(init.body);
+      assert.equal(body.force, false);
+      return new Response(JSON.stringify({ object: { sha: body.sha } }), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (url.pathname.startsWith("/repos/o/r/contents/")) {
       const path = decodeURIComponent(url.pathname.slice("/repos/o/r/contents/".length));
@@ -317,6 +345,19 @@ await test("超过项目总量 10MB 上限（单文件均合规）→ 413", asyn
   const r = await worker.fetch(req("/api/upload", { method: "POST", body: fd }), ENV);
   assert.equal(r.status, 413);
   assert.ok((await r.json()).error.includes("10MB"));
+});
+
+await test("大文件数站点批量写入：GitHub 子请求数受控（修复 50 上限）", async () => {
+  state.gitCalls = 0; // 只统计本测试的调用
+  const fd = new FormData();
+  fd.append("name", "z8x");
+  fd.append("file", new File([zipBytes("z8.zip")], "z8.zip", { type: "application/zip" }));
+  const j = await (await worker.fetch(req("/api/upload", { method: "POST", body: fd }), ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(j.files, 51); // 50 个文件 + index.html
+  assert.equal(state.files.get("sites/z8x/index.html"), "<h1>z8-many</h1>");
+  assert.equal(state.files.get("sites/z8x/f49.txt"), "data 49");
+  assert.ok(state.gitCalls <= 20, "批量写入应把子请求压到很少（实际 " + state.gitCalls + " 次，全部文件逐一写入会超过 50）");
 });
 
 await test("GET /z1x 301 跳转到 /z1x/", async () => {

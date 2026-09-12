@@ -355,6 +355,61 @@ async function putFile(env, sitePath, bytes, message, sha) {
   }
 }
 
+// 批量写入多个文件：一次创建 git 树（内联 base64），再创建提交并推进分支引用。
+// 相比逐个文件走 contents API（每文件一次子请求），批量提交仅需约 4-5 次请求，
+// 以适配 Workers Free 计划"每次调用最多 50 个子请求"的限制（站点文件多时不再报
+// "Too many subrequests by single Worker invocation"）。entries: [{ repoPath, bytes }]
+async function commitFiles(env, entries, message) {
+  const { owner, repo, branch } = ghConfig(env);
+  const refPath = `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`;
+
+  // 1) 分支头提交 sha（父提交）
+  const refRes = await ghFetch(env, refPath);
+  if (!refRes.ok) throw new UserError("读取分支引用失败" + (await ghErrorDetail(refRes)), 502);
+  const ref = await refRes.json();
+  const parentSha = ref && ref.object && ref.object.sha;
+  if (!parentSha) throw new UserError("无法获取分支头提交", 502);
+
+  // 2) 头提交的根树 sha（作为 base_tree，保留仓库其他未改动文件）
+  const headRes = await ghFetch(env, `/repos/${owner}/${repo}/git/commits/${parentSha}`);
+  if (!headRes.ok) throw new UserError("读取分支头提交失败" + (await ghErrorDetail(headRes)), 502);
+  const head = await headRes.json();
+  const baseTreeSha = head.tree && head.tree.sha;
+
+  // 3) 一步创建整棵新树（内容内联、base64 编码，mode 100644）
+  const treeRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_tree: baseTreeSha,
+      tree: entries.map((e) => ({ path: e.repoPath, mode: "100644", type: "blob", content: toBase64(e.bytes) })),
+    }),
+  });
+  if (!treeRes.ok) throw new UserError("批量写入失败（创建树）" + (await ghErrorDetail(treeRes)), 502);
+  const tree = await treeRes.json();
+
+  // 4) 创建提交
+  const commitRes = await ghFetch(env, `/repos/${owner}/${repo}/git/commits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: message || `deploy(html-hosting): 批量更新 ${entries.length} 个文件`,
+      tree: tree.sha,
+      parents: [parentSha],
+    }),
+  });
+  if (!commitRes.ok) throw new UserError("批量写入失败（创建提交）" + (await ghErrorDetail(commitRes)), 502);
+  const commit = await commitRes.json();
+
+  // 5) 推进分支引用
+  const updRes = await ghFetch(env, refPath, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  if (!updRes.ok) throw new UserError("批量写入失败（更新分支）" + (await ghErrorDetail(updRes)), 502);
+}
+
 // 读取仓库文件（JSON 模式，返回内容与 sha）；不存在返回 null
 // cached=true 时让边缘缓存该响应（仅用于几乎不变的元数据，如 .bay.json），
 // 生效命中后不再回源 GitHub，显著降低站点访问的加载延迟（与站点回源同样缓存 5 分钟）。
@@ -702,13 +757,7 @@ async function handleUpload(request, env) {
     await deleteSite(env, name, existing.paths); // 已过期：清理后复用
   }
 
-  // ---- 逐个文件顺序提交（避免 GitHub 并发提交限制） ----
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    await putFile(env, `sites/${name}/${f.path}`, f.bytes, `deploy(html-hosting): ${name} (${i + 1}/${files.length}) ${f.path}`);
-  }
-
-  // ---- 写入有效期元数据（含上传者 IP） ----
+  // ---- 批量写入全部文件与有效期元数据（单次提交，避免逐文件回源触发子请求上限） ----
   const now = Date.now();
   const meta = JSON.stringify({
     v: 1,
@@ -716,7 +765,9 @@ async function handleUpload(request, env) {
     expire_at: now + EXPIRY_DAYS[expiry] * 86400000,
     ...(ip ? { uploader_ip: ip } : {}),
   });
-  await putFile(env, `sites/${name}/${META_FILE}`, new TextEncoder().encode(meta), `meta(html-hosting): ${name} 有效期 ${expiry}`);
+  const entries = files.map((f) => ({ repoPath: `sites/${name}/${f.path}`, bytes: f.bytes }));
+  entries.push({ repoPath: `sites/${name}/${META_FILE}`, bytes: new TextEncoder().encode(meta) });
+  await commitFiles(env, entries, `deploy(html-hosting): ${name}（${files.length} 个文件）`);
 
   // ---- 配额记账（发布成功后才累计本次体积） ----
   if (ip) await consumeIpQuota(env, ip, total);
