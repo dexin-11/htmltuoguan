@@ -117,7 +117,7 @@ curl -H 'Content-Type: application/json' \
 ```bash
 cp .dev.vars.example .dev.vars   # 填入本地测试用的 GitHub 配置
 npx wrangler dev                 # http://localhost:8787
-npm test                         # 68 项全链路测试（mock GitHub，零依赖，需系统 python3）
+npm test                         # 72 项全链路测试（mock GitHub，零依赖，需系统 python3）
 ```
 
 ## 注意事项

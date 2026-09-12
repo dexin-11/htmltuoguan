@@ -91,13 +91,13 @@ globalThis.fetch = async (input, init = {}) => {
     }
     if (url.pathname === "/repos/o/r/git/trees" && method === "POST") {
       const body = JSON.parse(init.body);
-      if (!(body.tree && body.tree.length)) {
-        // deleteTree 第一步：创建空树
-        return new Response(JSON.stringify({ sha: "EMPTY-tree" }), { status: 201, headers: { "content-type": "application/json" } });
+      // 与 GitHub 一致：空树数组一律 422 Invalid tree info（deleteTree 不能依赖空树创建）
+      if (!Array.isArray(body.tree) || body.tree.length === 0) {
+        return new Response(JSON.stringify({ message: "Invalid tree info" }), { status: 422, headers: { "content-type": "application/json" } });
       }
       for (const e of body.tree) {
-        if (e.type === "tree" && e.sha === "EMPTY-tree" && body.base_tree) {
-          // deleteTree 第二步：用空树覆盖 path → 删除该目录下全部文件
+        if (e.type === "tree" && e.sha === "4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
+          // deleteTree：用 git 空树覆盖 path → 删除该目录下全部文件
           for (const k of [...state.files.keys()]) {
             if (k === e.path || k.startsWith(e.path + "/")) state.files.delete(k);
           }
@@ -726,6 +726,15 @@ await test("管理删除站点", async () => {
   assert.equal(j.ok, true);
   assert.equal(state.files.has("sites/ip-site/index.html"), false);
   assert.equal(state.files.has("sites/ip-site/.bay.json"), false);
+});
+
+await test("管理删除站点（空树数组被 GitHub 拒绝时仍可删除）", async () => {
+  state.files.set("sites/del-ok/index.html", "<h1>del-ok</h1>");
+  state.files.set("sites/del-ok/.bay.json", '{"v":1}');
+  const j = await (await worker.fetch(req("/api/admin/sites/del-ok", { method: "DELETE", headers: AUTH }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(state.files.has("sites/del-ok/index.html"), false);
+  assert.equal(state.files.has("sites/del-ok/.bay.json"), false);
 });
 
 await test("管理删除不存在的站点 → 404", async () => {

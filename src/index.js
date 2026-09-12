@@ -20,6 +20,9 @@ const SETTINGS_FILE = ".bay-settings.json"; // 全局上传开关（仓库根目
 const DAY_BYTES = 20 * 1024 * 1024; // 单 IP 每日上传上限 20MB
 const WEEK_BYTES = 50 * 1024 * 1024; // 单 IP 每周上传上限 50MB
 const MAX_REPO_BYTES = 800 * 1024 * 1024; // 仓库容量上限 800MB，达到后停止上传
+// git 空树对象的固定 SHA：GitHub 的创建树接口不接受 {"tree": []}（422 Invalid tree info），
+// 但始终接受该固定 SHA 作为目录条目引用，用它覆盖目录即等效清空该目录全部文件
+const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 // ---------- 通用工具 ----------
 class UserError extends Error {
@@ -441,29 +444,21 @@ async function commitFiles(env, entries, message) {
   await commitTree(env, message || `deploy(html-hosting): 批量更新 ${entries.length} 个文件`, tree.sha, parentSha);
 }
 
-// 删除整棵子树（如整个站点目录）：创建一棵空树覆盖该目录，再作为一次提交推进分支。
-// 相比 contents API 逐文件删除（每文件一次子请求，站点文件多时很慢且易触发 50 上限），
-// 这里仅需约 5 次请求，删除任意多文件都是同样的速度。
+// 删除整棵子树（如整个站点目录）：根树中把该目录条目指向 git 空树（固定 SHA），
+// 再作为一次提交推进分支。相比 contents API 逐文件删除（每文件一次子请求，站点
+// 文件多时很慢且易触发 50 上限），这里仅需约 5 次请求，删除任意多文件都是同样的速度。
 async function deleteTree(env, path, message) {
   const { owner, repo } = ghConfig(env);
   const { parentSha, baseTreeSha } = await branchHead(env);
 
-  // 1) 空树（代表该目录不再含任何文件）
-  const emptyRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tree: [] }),
-  });
-  if (!emptyRes.ok) throw new UserError("删除失败（创建空树）" + (await ghErrorDetail(emptyRes)), 502);
-  const empty = await emptyRes.json();
-
-  // 2) 根树中把 path 覆盖为空树，等效删除该目录全部文件
+  // 不能用 POST {"tree": []} 创建"空树"（GitHub 返回 422 Invalid tree info），
+  // 直接引用固定空树 SHA 覆盖该目录即可
   const treeRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       base_tree: baseTreeSha,
-      tree: [{ path, mode: "040000", type: "tree", sha: empty.sha }],
+      tree: [{ path, mode: "040000", type: "tree", sha: EMPTY_TREE_SHA }],
     }),
   });
   if (!treeRes.ok) throw new UserError("删除失败（重建树）" + (await ghErrorDetail(treeRes)), 502);
