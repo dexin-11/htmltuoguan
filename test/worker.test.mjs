@@ -442,13 +442,18 @@ await test("GitHub 回显 vnd.github.raw+json 类型时仍以 text/html 渲染",
   assert.equal(await r.text(), "<h1>single</h1>");
 });
 
-await test("GitHub 返回 text/plain 时 .html 仍以 text/html 渲染", async () => {
-  state.serveOverride = { path: "sites/single/index.html", ct: "text/plain; charset=utf-8" };
+await test("GitHub 返回 base64 JSON 信封但 Content-Type 非 json 时仍解码渲染", async () => {
+  const raw = state.files.get("sites/single/index.html");
+  state.serveOverride = {
+    path: "sites/single/index.html",
+    ct: "text/plain; charset=utf-8", // 异常 Content-Type：不再是 application/json
+    body: JSON.stringify({ name: "index.html", encoding: "base64", content: btoa(raw) }),
+  };
   const r = await worker.fetch(req("/single/"), ENV);
   state.serveOverride = null;
   assert.equal(r.status, 200);
   assert.ok(r.headers.get("content-type").startsWith("text/html"));
-  assert.equal(await r.text(), "<h1>single</h1>");
+  assert.equal(await r.text(), "<h1>single</h1>"); // 解码后为真实 HTML，非 base64 乱码
 });
 
 await test("GitHub 返回 base64 JSON 信封时解码内容并以 text/html 渲染", async () => {

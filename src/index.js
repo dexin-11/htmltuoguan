@@ -655,11 +655,15 @@ async function serveFile(env, name, path, ctx) {
 
   const ghCt = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
   const myMime = mimeFor(path);
+  // 文本类文件（HTML/CSS/JS/JSON/XML/SVG）：GitHub 偶发返回 base64 JSON 信封而 Content-Type 又非
+  // 标准 application/json（如命中错误边缘缓存或响应类型异常）。这里不依赖 ghCt，统一尝试解码，
+  // 确保这些文件永远渲染为可读文本而不是 base64 乱码。
+  const isTextLike = /(^text\/)|(javascript)|(\bjson\b)|(\bxml\b)|(svg)/.test(myMime);
 
-  // GitHub 对 raw 媒体类型可能返回 JSON 信封（base64 元数据）而非原始内容：解码出真实文件
-  let body = res.body;
-  if (ghCt === "application/json" && !myMime.startsWith("application/json")) {
+  let body;
+  if (isTextLike) {
     const text = await res.text();
+    body = text;
     try {
       const j = JSON.parse(text);
       if (j && typeof j.content === "string" && j.encoding === "base64") {
@@ -667,12 +671,12 @@ async function serveFile(env, name, path, ctx) {
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         body = bytes;
-      } else {
-        body = text;
       }
     } catch {
-      body = text;
+      // 不是 JSON，即正常文件内容，保持原样
     }
+  } else {
+    body = res.body;
   }
 
   // Content-Type 一律以本地扩展名映射为准：GitHub 对 raw 请求会返回
