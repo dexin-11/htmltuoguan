@@ -258,9 +258,10 @@ function sitesFromTree(blobs) {
 }
 
 // 读取站点元数据（有效期/上传IP）；无元数据或读取失败视为长期有效
+// 元数据仅在发布/续期/删除时改变，故走边缘缓存，避免每次访问都回源 GitHub
 async function getMeta(env, name) {
   try {
-    const f = await readRepoFile(env, `sites/${name}/${META_FILE}`);
+    const f = await readRepoFile(env, `sites/${name}/${META_FILE}`, true);
     if (!f) return null;
     const j = JSON.parse(f.text);
     return j && typeof j.expire_at === "number" ? j : null;
@@ -310,14 +311,21 @@ async function handleListSites(env, ctx) {
   const out = [];
   const expired = [];
   const now = Date.now();
-  for (const s of sites.values()) {
-    const meta = await getMeta(env, s.name);
-    const item = { name: s.name, files: s.files, size: s.size, expire_at: meta ? meta.expire_at : null };
-    if (isExpired(meta, now)) {
-      item.expired = true;
-      expired.push(s);
-    }
-    out.push(item);
+  // 并行读取各站点元数据，避免站点多时逐串行回源导致列表加载缓慢
+  const results = await Promise.all(
+    [...sites.values()].map(async (s) => {
+      const meta = await getMeta(env, s.name);
+      const item = { name: s.name, files: s.files, size: s.size, expire_at: meta ? meta.expire_at : null };
+      if (isExpired(meta, now)) {
+        item.expired = true;
+        return { item, s, expired: true };
+      }
+      return { item, s, expired: false };
+    })
+  );
+  for (const r of results) {
+    out.push(r.item);
+    if (r.expired) expired.push(r.s);
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   if (expired.length && ctx && typeof ctx.waitUntil === "function") {
@@ -348,7 +356,9 @@ async function putFile(env, sitePath, bytes, message, sha) {
 }
 
 // 读取仓库文件（JSON 模式，返回内容与 sha）；不存在返回 null
-async function readRepoFile(env, path) {
+// cached=true 时让边缘缓存该响应（仅用于几乎不变的元数据，如 .bay.json），
+// 生效命中后不再回源 GitHub，显著降低站点访问的加载延迟（与站点回源同样缓存 5 分钟）。
+async function readRepoFile(env, path, cached = false) {
   const { api, owner, repo, branch, token } = ghConfig(env);
   const url = `${api}/repos/${owner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(branch)}`;
   const res = await fetch(url, {
@@ -358,7 +368,7 @@ async function readRepoFile(env, path) {
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "html-hosting-worker",
     },
-    cf: { cacheEverything: false },
+    cf: cached ? { cacheTtl: 300, cacheEverything: true } : { cacheEverything: false },
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new UserError("读取仓库文件失败" + (await ghErrorDetail(res)), 502);
@@ -721,19 +731,21 @@ async function handleAdminSites(env, request) {
   const blobs = await getTree(env);
   if (blobs === null) throw new UserError("仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置", 502);
   const sites = sitesFromTree(blobs);
-  const out = [];
-  for (const s of sites.values()) {
-    const meta = await getMeta(env, s.name);
-    out.push({
-      name: s.name,
-      files: s.files,
-      size: s.size,
-      expire_at: meta ? meta.expire_at : null,
-      uploader_ip: meta && meta.uploader_ip ? meta.uploader_ip : null,
-    });
-  }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return json({ ok: true, sites: out });
+  // 并行读取各站点元数据，站点多时避免逐串行回源拖慢后台加载
+  const rows = await Promise.all(
+    [...sites.values()].map(async (s) => {
+      const meta = await getMeta(env, s.name);
+      return {
+        name: s.name,
+        files: s.files,
+        size: s.size,
+        expire_at: meta ? meta.expire_at : null,
+        uploader_ip: meta && meta.uploader_ip ? meta.uploader_ip : null,
+      };
+    })
+  );
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return json({ ok: true, sites: rows });
 }
 
 // 删除项目（整个目录）
