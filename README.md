@@ -41,34 +41,14 @@ npx wrangler login     # 登录 Cloudflare
 
 ### 3. 配置环境变量
 
-**重要**：[wrangler.toml](wrangler.toml) 中不再定义 `[vars]`——否则每次 `npx wrangler deploy` 都会把文件里的占位符值覆盖回 Cloudflare 控制台，导致"控制台改完、部署后又变回去"。请按以下任一种方式在**远端**配置：
-
-**方式一（推荐）· Cloudflare 控制台**
-
-Workers → 你的 Worker → 设置 → 变量与机密 → 添加变量：
-
-```text
-GH_OWNER  = 你的 GitHub 用户名 / 组织名
-GH_REPO   = 存储站点文件的仓库名
-GH_BRANCH = main    # 存储分支（需已存在）
-```
-
-可选变量：`GH_API`（自建 GitHub Enterprise 的 API 地址，默认 `https://api.github.com`）。
-
-**方式二 · 命令行写入**（普通变量也可用 secret 方式写入，效果一致，均不会被 deploy 覆盖）：
-
-```bash
-npx wrangler secret put GH_OWNER
-npx wrangler secret put GH_REPO
-npx wrangler secret put GH_BRANCH
-```
-
-设置密钥（敏感信息，不入库）：
+[wrangler.toml](wrangler.toml) 中已**写死** `GH_OWNER` / `GH_REPO`（指向本项目作者的仓库），换仓库时改文件里的值即可；`GH_BRANCH` 默认 `main`，无需配置。部署前只需设置两个密钥：
 
 ```bash
 npx wrangler secret put GH_TOKEN        # GitHub Token，需 repo / contents 读写权限
 npx wrangler secret put ADMIN_PASSWORD  # 管理后台 /admin 的登录密码
 ```
+
+可选变量：`GH_API`（自建 GitHub Enterprise 的 API 地址，默认 `https://api.github.com`）；`GH_BRANCH`（非 main 分支时在 `[vars]` 中追加）。
 
 ### 4. 部署
 
