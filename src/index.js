@@ -292,19 +292,9 @@ async function getMetaWithSha(env, name) {
 
 const isExpired = (meta, now = Date.now()) => !!meta && meta.expire_at <= now;
 
-// 删除站点全部文件（含元数据）；逐个删除，失败不中断
+// 删除站点全部文件（含元数据）：把 sites/{name} 子树置空后一次提交，速度快且不受文件数影响
 async function deleteSite(env, name, blobs) {
-  const { owner, repo, branch } = ghConfig(env);
-  for (const it of blobs) {
-    const res = await ghFetch(env, `/repos/${owner}/${repo}/contents/${encodePath(it.path)}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: `cleanup(html-hosting): 过期删除 ${name}`, sha: it.sha, branch }),
-    });
-    if (!res.ok && res.status !== 404 && res.status !== 409) {
-      // 尽力而为：单个失败不影响其余文件
-    }
-  }
+  await deleteTree(env, `sites/${name}`, `cleanup(html-hosting): 过期删除 ${name}`);
 }
 
 // 项目列表接口：附带有效期信息，顺带异步清理已过期站点
@@ -365,24 +355,43 @@ async function putFile(env, sitePath, bytes, message, sha) {
 // 相比逐个文件走 contents API（每文件一次子请求），批量提交仅需约 4-5 次请求，
 // 以适配 Workers Free 计划"每次调用最多 50 个子请求"的限制（站点文件多时不再报
 // "Too many subrequests by single Worker invocation"）。entries: [{ repoPath, bytes }]
-async function commitFiles(env, entries, message) {
+// 读取分支头提交 sha 与其根树 sha（批量写入/删除的公共起点）
+async function branchHead(env) {
   const { owner, repo, branch } = ghConfig(env);
-  const refPath = `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`;
-
-  // 1) 分支头提交 sha（父提交）
-  const refRes = await ghFetch(env, refPath);
+  const refRes = await ghFetch(env, `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`);
   if (!refRes.ok) throw new UserError("读取分支引用失败" + (await ghErrorDetail(refRes)), 502);
   const ref = await refRes.json();
   const parentSha = ref && ref.object && ref.object.sha;
   if (!parentSha) throw new UserError("无法获取分支头提交", 502);
-
-  // 2) 头提交的根树 sha（作为 base_tree，保留仓库其他未改动文件）
   const headRes = await ghFetch(env, `/repos/${owner}/${repo}/git/commits/${parentSha}`);
   if (!headRes.ok) throw new UserError("读取分支头提交失败" + (await ghErrorDetail(headRes)), 502);
   const head = await headRes.json();
-  const baseTreeSha = head.tree && head.tree.sha;
+  return { parentSha, baseTreeSha: head.tree && head.tree.sha };
+}
 
-  // 3) 一步创建整棵新树（内容内联、base64 编码，mode 100644）
+// 基于给定树创建一次提交并推进分支引用（批量写入/删除的公共收尾）
+async function commitTree(env, message, treeSha, parentSha) {
+  const { owner, repo, branch } = ghConfig(env);
+  const commitRes = await ghFetch(env, `/repos/${owner}/${repo}/git/commits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, tree: treeSha, parents: [parentSha] }),
+  });
+  if (!commitRes.ok) throw new UserError("创建提交失败" + (await ghErrorDetail(commitRes)), 502);
+  const commit = await commitRes.json();
+  const updRes = await ghFetch(env, `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  if (!updRes.ok) throw new UserError("更新分支引用失败" + (await ghErrorDetail(updRes)), 502);
+}
+
+async function commitFiles(env, entries, message) {
+  const { owner, repo } = ghConfig(env);
+  const { parentSha, baseTreeSha } = await branchHead(env);
+
+  // 一步创建整棵新树（内容内联、base64 编码，mode 100644）
   const treeRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -394,26 +403,38 @@ async function commitFiles(env, entries, message) {
   if (!treeRes.ok) throw new UserError("批量写入失败（创建树）" + (await ghErrorDetail(treeRes)), 502);
   const tree = await treeRes.json();
 
-  // 4) 创建提交
-  const commitRes = await ghFetch(env, `/repos/${owner}/${repo}/git/commits`, {
+  await commitTree(env, message || `deploy(html-hosting): 批量更新 ${entries.length} 个文件`, tree.sha, parentSha);
+}
+
+// 删除整棵子树（如整个站点目录）：创建一棵空树覆盖该目录，再作为一次提交推进分支。
+// 相比 contents API 逐文件删除（每文件一次子请求，站点文件多时很慢且易触发 50 上限），
+// 这里仅需约 5 次请求，删除任意多文件都是同样的速度。
+async function deleteTree(env, path, message) {
+  const { owner, repo } = ghConfig(env);
+  const { parentSha, baseTreeSha } = await branchHead(env);
+
+  // 1) 空树（代表该目录不再含任何文件）
+  const emptyRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tree: [] }),
+  });
+  if (!emptyRes.ok) throw new UserError("删除失败（创建空树）" + (await ghErrorDetail(emptyRes)), 502);
+  const empty = await emptyRes.json();
+
+  // 2) 根树中把 path 覆盖为空树，等效删除该目录全部文件
+  const treeRes = await ghFetch(env, `/repos/${owner}/${repo}/git/trees`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: message || `deploy(html-hosting): 批量更新 ${entries.length} 个文件`,
-      tree: tree.sha,
-      parents: [parentSha],
+      base_tree: baseTreeSha,
+      tree: [{ path, mode: "040000", type: "tree", sha: empty.sha }],
     }),
   });
-  if (!commitRes.ok) throw new UserError("批量写入失败（创建提交）" + (await ghErrorDetail(commitRes)), 502);
-  const commit = await commitRes.json();
+  if (!treeRes.ok) throw new UserError("删除失败（重建树）" + (await ghErrorDetail(treeRes)), 502);
+  const tree = await treeRes.json();
 
-  // 5) 推进分支引用
-  const updRes = await ghFetch(env, refPath, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sha: commit.sha, force: false }),
-  });
-  if (!updRes.ok) throw new UserError("批量写入失败（更新分支）" + (await ghErrorDetail(updRes)), 502);
+  await commitTree(env, message, tree.sha, parentSha);
 }
 
 // 读取仓库文件（JSON 模式，返回内容与 sha）；不存在返回 null

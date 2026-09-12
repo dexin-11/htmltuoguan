@@ -82,7 +82,7 @@ globalThis.fetch = async (input, init = {}) => {
       const tree = [...state.files.keys()].map((p) => ({ path: p, type: "blob", size: state.files.get(p).length, sha: "sha-" + p }));
       return new Response(JSON.stringify({ tree }), { status: 200, headers: { "content-type": "application/json" } });
     }
-    // 批量写入（commitFiles）：refs → head commit → 创建树 → 创建提交 → 推进分支
+    // 批量写入/删除（commitFiles / deleteTree）：refs → head commit → 创建树 → 创建提交 → 推进分支
     if (url.pathname === "/repos/o/r/git/refs/heads/main") {
       return new Response(JSON.stringify({ object: { type: "commit", sha: "HEAD-commit" } }), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -91,7 +91,21 @@ globalThis.fetch = async (input, init = {}) => {
     }
     if (url.pathname === "/repos/o/r/git/trees" && method === "POST") {
       const body = JSON.parse(init.body);
-      for (const e of body.tree) state.files.set(e.path, atob(e.content));
+      if (!(body.tree && body.tree.length)) {
+        // deleteTree 第一步：创建空树
+        return new Response(JSON.stringify({ sha: "EMPTY-tree" }), { status: 201, headers: { "content-type": "application/json" } });
+      }
+      for (const e of body.tree) {
+        if (e.type === "tree" && e.sha === "EMPTY-tree" && body.base_tree) {
+          // deleteTree 第二步：用空树覆盖 path → 删除该目录下全部文件
+          for (const k of [...state.files.keys()]) {
+            if (k === e.path || k.startsWith(e.path + "/")) state.files.delete(k);
+          }
+        } else if (e.content) {
+          // commitFiles：内联写入文件
+          state.files.set(e.path, atob(e.content));
+        }
+      }
       return new Response(JSON.stringify({ sha: "TREE-new" }), { status: 201, headers: { "content-type": "application/json" } });
     }
     if (url.pathname === "/repos/o/r/git/commits" && method === "POST") {
