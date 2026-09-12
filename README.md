@@ -15,7 +15,9 @@
 - ZIP 必须包含 `index.html` 校验；自动剥离外层文件夹（`site/index.html` → 根目录）；自动过滤 `__MACOSX`、`.DS_Store`
 - 项目列表展示（文件数 / 总大小 / 剩余有效期 / 访问链接）
 - 站点静态服务：`/{项目名}/` 渲染 `index.html`，其余文件按原路径回源，子目录自动回退 `index.html`
-- **管理后台**（`/admin`）：输入环境变量 `ADMIN_PASSWORD` 密码登录后可查看全部站点（含上传者 IP）、一键续期或删除站点、将恶意 IP 加入黑名单（被拉黑 IP 无法再发布）
+- **管理后台**（`/admin`）：输入环境变量 `ADMIN_PASSWORD` 密码登录后可查看全部站点（含上传者 IP）、一键续期或删除站点、将恶意 IP 加入黑名单（被拉黑 IP 无法再发布）、**全局上传开关**（一键暂停/恢复所有新发布，并实时显示仓库体积使用情况）
+- **单 IP 上传配额**：每个 IP 每天最多上传 20MB、每周最多 50MB（UTC 日/周窗口，按 Cloudflare 连接 IP 统计，超限返回 429）
+- **仓库容量上限**：存储仓库体积达到 800MB 时自动停止上传（返回 503），管理员可在后台看到当前体积与上限
 - 安全：项目名白名单正则、URL/ZIP 双重路径穿越防护、`X-Content-Type-Options: nosniff`、管理 API 统一密码鉴权
 
 ## 快速开始
@@ -39,27 +41,33 @@ npx wrangler login     # 登录 Cloudflare
 
 ### 3. 配置环境变量
 
-编辑 [wrangler.toml](wrangler.toml)：
+**重要**：[wrangler.toml](wrangler.toml) 中不再定义 `[vars]`——否则每次 `npx wrangler deploy` 都会把文件里的占位符值覆盖回 Cloudflare 控制台，导致"控制台改完、部署后又变回去"。请按以下任一种方式在**远端**配置：
 
-```toml
-[vars]
-GH_OWNER = "your-github-username"   # GitHub 用户名 / 组织名
-GH_REPO  = "your-repo-name"         # 存储仓库
-GH_BRANCH = "main"                  # 存储分支（需已存在）
-```
+**方式一（推荐）· Cloudflare 控制台**
 
-设置 Token（密钥，不入库）：
+Workers → 你的 Worker → 设置 → 变量与机密 → 添加变量：
 
-```bash
-npx wrangler secret put GH_TOKEN
+```text
+GH_OWNER  = 你的 GitHub 用户名 / 组织名
+GH_REPO   = 存储站点文件的仓库名
+GH_BRANCH = main    # 存储分支（需已存在）
 ```
 
 可选变量：`GH_API`（自建 GitHub Enterprise 的 API 地址，默认 `https://api.github.com`）。
 
-设置管理后台密码（访问 `/admin` 需要，密钥不入库）：
+**方式二 · 命令行写入**（普通变量也可用 secret 方式写入，效果一致，均不会被 deploy 覆盖）：
 
 ```bash
-npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put GH_OWNER
+npx wrangler secret put GH_REPO
+npx wrangler secret put GH_BRANCH
+```
+
+设置密钥（敏感信息，不入库）：
+
+```bash
+npx wrangler secret put GH_TOKEN        # GitHub Token，需 repo / contents 读写权限
+npx wrangler secret put ADMIN_PASSWORD  # 管理后台 /admin 的登录密码
 ```
 
 ### 4. 部署
@@ -74,16 +82,18 @@ npx wrangler deploy
 
 **页面操作**：打开 Worker 首页 → 填项目名（小写字母/数字/连字符，1-40 位）→ 选择有效期（3 天 / 7 天 / 1 个月，默认 7 天）→ 拖入 ZIP（内含 index.html）或 .html 文件，或切到"粘贴代码" → 点"部署到 GITHUB" → 复制返回的链接。
 
-**管理后台**：打开 `https://<worker域名>/admin` → 输入 `ADMIN_PASSWORD` 对应的密码 → 进入后可查看所有站点（文件数 / 大小 / 上传者 IP / 有效期）、一键续期（+7 天 / +30 天）或删除站点；右侧"IP 黑名单"输入框填入恶意 IP（支持 IPv4 / IPv6）点击"拉黑"，此后该 IP 的发布请求会被拒绝（403）。密码仅在浏览器会话内保存，退出登录或关闭页面即失效。
+**管理后台**：打开 `https://<worker域名>/admin` → 输入 `ADMIN_PASSWORD` 对应的密码 → 进入后可查看所有站点（文件数 / 大小 / 上传者 IP / 有效期）、一键续期（+7 天 / +30 天）或删除站点；顶部"全局设置"卡片可查看仓库体积使用进度，并可一键**关闭/开启上传功能**（关闭后所有新发布请求返回 503，已发布站点不受影响）；右侧"IP 黑名单"输入框填入恶意 IP（支持 IPv4 / IPv6）点击"拉黑"，此后该 IP 的发布请求会被拒绝（403）。密码仅在浏览器会话内保存，退出登录或关闭页面即失效。
 
 **规则与限制**：
 
 | 项目 | 限制 |
 |---|---|
-| 项目名 | `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`，保留字 `api` |
+| 项目名 | `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`，保留字 `api`、`admin` |
 | 必须包含 | 根目录 `index.html`（外层文件夹自动剥离） |
 | 单文件 | ≤ 3MB |
 | 项目总量 | ≤ 10MB、≤ 200 个文件 |
+| 单 IP 上传 | 每天 ≤ 20MB、每周 ≤ 50MB（UTC 日/周窗口，超限返回 429） |
+| 仓库容量 | 达到 800MB 时停止上传（返回 503） |
 | 有效期 | 3 天 / 7 天 / 1 个月（默认 7 天），过期返回 410 并自动清理，名称可复用 |
 | 名称冲突 | 409 拒绝；已过期或手动删除远端 `sites/{项目名}/` 目录后可复用 |
 
@@ -103,6 +113,8 @@ npx wrangler deploy
 | `GET` | `/api/admin/blacklist` | 管理：读取 IP 黑名单 |
 | `POST` | `/api/admin/blacklist` | 管理：拉黑 `{ip, note?}` |
 | `DELETE` | `/api/admin/blacklist/{ip}` | 管理：移出黑名单 |
+| `GET` | `/api/admin/settings` | 管理：读取全局设置 `{uploads_enabled, repo_size_bytes, max_repo_bytes}` |
+| `POST` | `/api/admin/settings` | 管理：修改上传开关 `{uploads_enabled: bool}` |
 
 管理端接口鉴权：请求头 `X-Admin-Token: <ADMIN_PASSWORD>`，缺失或错误返回 401。
 
@@ -125,14 +137,17 @@ curl -H 'Content-Type: application/json' \
 ```bash
 cp .dev.vars.example .dev.vars   # 填入本地测试用的 GitHub 配置
 npx wrangler dev                 # http://localhost:8787
-npm test                         # 58 项全链路测试（mock GitHub，零依赖，需系统 python3）
+npm test                         # 68 项全链路测试（mock GitHub，零依赖，需系统 python3）
 ```
 
 ## 注意事项
 
 - Worker 调用 GitHub API 有 5000 次/小时限额；部署是逐文件提交（避免 GitHub 并发提交限制），一个 200 文件的站点消耗约 202 次配额（含元数据）
 - **有效期机制**：部署时在 `sites/{项目名}/.bay.json` 写入过期时间戳与上传者 IP（`uploader_ip`）；站点被访问或项目列表加载时检查，过期则返回 410 并异步删除仓库内该目录（因边缘缓存，过期判断最多延迟约 5 分钟）；重新上传同名过期项目会先清理再写入
-- **IP 黑名单**：保存在仓库根目录 `.bay-blacklist.json`（`.bay-blacklist.json` 不会被计入站点列表）；上传请求按 Cloudflare 连接 IP（`cf-connecting-ip`）校验，命中黑名单返回 403。注意：普通用户更换网络/代理后 IP 会变化，黑名单仅作访问控制辅助手段
+- **IP 黑名单**：保存在仓库根目录 `.bay-blacklist.json`（不会被计入站点列表）；上传请求按 Cloudflare 连接 IP（`cf-connecting-ip`）校验，命中黑名单返回 403。注意：普通用户更换网络/代理后 IP 会变化，黑名单仅作访问控制辅助手段
+- **单 IP 上传配额**：保存在仓库根目录 `.bay-quota.json`，按 UTC 日/周窗口记录每个 IP 的累计上传字节（20MB/天、50MB/周）；配额在发布成功后才记账，读取失败时放行。注意：配额与黑名单一样依赖 `cf-connecting-ip`，更换网络/代理可绕过，仅作流量限制辅助手段
+- **仓库容量上限**：上传前调用 GitHub API 读取仓库体积（`size` 字段，KB 为单位换算），达到 800MB 时拒绝上传；读取失败时放行（不阻断正常使用）。注意 GitHub 的 `size` 是仓库快照值，可能有短暂延迟
+- **全局上传开关**：保存在仓库根目录 `.bay-settings.json`（`uploads_enabled`），由管理后台 `/admin` 的"全局设置"卡片切换；关闭后所有新发布返回 503，已发布站点访问不受影响
 - 若部署中途失败（如限流），部分文件可能已写入仓库，可删除远端 `sites/{项目名}/` 目录后重试
 - 回源内容在 Cloudflare 边缘缓存 5 分钟，更新站点后最多延迟 5 分钟生效
 - 控制台无鉴权，任何知道域名的人都可部署；管理后台 `/admin` 由 `ADMIN_PASSWORD` 保护。如需进一步限制访问，请在 Cloudflare 侧启用 Access 等防护
@@ -140,7 +155,7 @@ npm test                         # 58 项全链路测试（mock GitHub，零依�
 ## 项目结构
 
 ```
-src/index.js   Worker：路由 / 校验 / 零依赖 ZIP 解析 / GitHub API / 有效期管理 / 静态回源 / 管理端 API / IP 黑名单
+src/index.js   Worker：路由 / 校验 / 零依赖 ZIP 解析 / GitHub API / 有效期管理 / 静态回源 / 管理端 API / IP 黑名单 / 上传配额 / 仓库容量闸门 / 全局上传开关
 src/ui.js      图形化控制台页面（内嵌 HTML）
 src/admin.js   管理后台页面（内嵌 HTML）
 test/          全链路测试（mock GitHub REST API）

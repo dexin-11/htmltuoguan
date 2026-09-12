@@ -15,6 +15,11 @@ const BLACKLIST_FILE = ".bay-blacklist.json"; // IP 黑名单文件（仓库根�
 const EXPIRY_DAYS = { "3d": 3, "7d": 7, "30d": 30 }; // 有效期选项：3 天 / 7 天 / 1 个月
 const DEFAULT_EXPIRY = "7d";
 const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+const QUOTA_FILE = ".bay-quota.json"; // IP 上传配额（仓库根目录）
+const SETTINGS_FILE = ".bay-settings.json"; // 全局上传开关（仓库根目录）
+const DAY_BYTES = 20 * 1024 * 1024; // 单 IP 每日上传上限 20MB
+const WEEK_BYTES = 50 * 1024 * 1024; // 单 IP 每周上传上限 50MB
+const MAX_REPO_BYTES = 800 * 1024 * 1024; // 仓库容量上限 800MB，达到后停止上传
 
 // ---------- 通用工具 ----------
 class UserError extends Error {
@@ -412,6 +417,110 @@ function isValidIp(s) {
   return s.includes(":") && /^[0-9a-fA-F:.%]+$/.test(s);
 }
 
+// ---------- 全局上传开关 ----------
+async function getSettings(env) {
+  try {
+    const f = await readRepoFile(env, SETTINGS_FILE);
+    if (!f) return { uploads_enabled: true, sha: null };
+    const j = JSON.parse(f.text);
+    return { uploads_enabled: j.uploads_enabled !== false, sha: f.sha };
+  } catch {
+    return { uploads_enabled: true, sha: null };
+  }
+}
+
+async function saveSettings(env, uploadsEnabled, sha) {
+  await writeRepoFile(
+    env,
+    SETTINGS_FILE,
+    JSON.stringify({ v: 1, updated_at: Date.now(), uploads_enabled: !!uploadsEnabled }),
+    "admin(html-hosting): 更新上传开关",
+    sha
+  );
+}
+
+// 仓库当前体积（GitHub API size 字段为 KB）；读取失败返回 null（不阻断上传）
+async function getRepoSizeBytes(env) {
+  try {
+    const { owner, repo } = ghConfig(env);
+    const res = await ghFetch(env, `/repos/${owner}/${repo}`);
+    if (!res.ok) return null;
+    const j = await res.json();
+    return typeof j.size === "number" ? j.size * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+// 上传前闸门：全局开关 + 仓库容量
+async function checkUploadGate(env) {
+  const s = await getSettings(env);
+  if (!s.uploads_enabled) throw new UserError("管理员已暂时关闭上传功能，请稍后再试", 503);
+  const size = await getRepoSizeBytes(env);
+  if (size !== null && size >= MAX_REPO_BYTES) throw new UserError("仓库容量已达上限（≥800MB），上传已停止", 503);
+}
+
+// ---------- 单 IP 上传配额 ----------
+const dayKey = (d) => d.toISOString().slice(0, 10);
+const weekKey = (d) => {
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); // 周一为一周起点
+  return x.toISOString().slice(0, 10);
+};
+const fmtMb = (b) => (b / 1024 / 1024).toFixed(1) + "MB";
+
+async function getQuota(env) {
+  try {
+    const f = await readRepoFile(env, QUOTA_FILE);
+    if (!f) return { byIp: {}, sha: null };
+    const j = JSON.parse(f.text);
+    return { byIp: j.byIp && typeof j.byIp === "object" ? j.byIp : {}, sha: f.sha };
+  } catch {
+    return { byIp: {}, sha: null };
+  }
+}
+
+async function saveQuota(env, byIp, sha) {
+  await writeRepoFile(
+    env,
+    QUOTA_FILE,
+    JSON.stringify({ v: 1, updated_at: Date.now(), byIp }),
+    "quota(html-hosting): 更新上传配额",
+    sha
+  );
+}
+
+// 配额检查：单 IP 每日 ≤ 20MB、每周 ≤ 50MB（UTC 日/周窗口），超限抛 429
+async function checkIpQuota(env, ip, addBytes) {
+  const q = await getQuota(env);
+  const now = new Date();
+  const dk = dayKey(now), wk = weekKey(now);
+  const rec = q.byIp[ip];
+  const dayUsed = rec && rec.d === dk ? rec.db : 0;
+  const weekUsed = rec && rec.w === wk ? rec.wb : 0;
+  if (dayUsed + addBytes > DAY_BYTES) throw new UserError(`单 IP 每天最多上传 20MB（今天已用 ${fmtMb(dayUsed)}），请明天再试`, 429);
+  if (weekUsed + addBytes > WEEK_BYTES) throw new UserError(`单 IP 每周最多上传 50MB（本周已用 ${fmtMb(weekUsed)}），请下周再试`, 429);
+}
+
+// 上传成功后才累计配额；记账失败不阻断发布结果
+async function consumeIpQuota(env, ip, bytes) {
+  try {
+    const q = await getQuota(env);
+    const now = new Date();
+    const dk = dayKey(now), wk = weekKey(now);
+    const rec = q.byIp[ip] || {};
+    q.byIp[ip] = {
+      d: dk,
+      db: (rec.d === dk ? rec.db : 0) + bytes,
+      w: wk,
+      wb: (rec.w === wk ? rec.wb : 0) + bytes,
+    };
+    await saveQuota(env, q.byIp, q.sha);
+  } catch {
+    /* 忽略 */
+  }
+}
+
 // 管理端鉴权
 function adminCheck(env, request) {
   const pwd = env.ADMIN_PASSWORD;
@@ -539,6 +648,9 @@ async function handleUpload(request, env) {
     }
   }
 
+  // ---- 全局闸门：管理员开关 + 仓库容量 ----
+  await checkUploadGate(env);
+
   // ---- 解析出待写入文件（始终保证根上有 index.html） ----
   let files; // [{path, bytes}]
   if (file) {
@@ -566,6 +678,9 @@ async function handleUpload(request, env) {
   const total = files.reduce((s, f) => s + f.bytes.length, 0);
   if (total > MAX_TOTAL_BYTES) throw new UserError("项目总大小超过 10MB 上限", 413);
 
+  // ---- 单 IP 配额预检（成功发布后才累计） ----
+  if (ip) await checkIpQuota(env, ip, total);
+
   // ---- 项目名唯一性校验（过期的项目自动清理后可复用名称） ----
   const blobs = await getTree(env);
   const existing = sitesFromTree(blobs || []).get(name);
@@ -592,6 +707,9 @@ async function handleUpload(request, env) {
     ...(ip ? { uploader_ip: ip } : {}),
   });
   await putFile(env, `sites/${name}/${META_FILE}`, new TextEncoder().encode(meta), `meta(html-hosting): ${name} 有效期 ${expiry}`);
+
+  // ---- 配额记账（发布成功后才累计本次体积） ----
+  if (ip) await consumeIpQuota(env, ip, total);
 
   return json({ ok: true, name, url: `/${name}/`, files: files.length, expiry_days: EXPIRY_DAYS[expiry] });
 }
@@ -693,6 +811,34 @@ async function handleBlacklistRemove(env, request, ip) {
   return json({ ok: true, ip });
 }
 
+// 全局设置：读取（含仓库体积与上限）
+async function handleSettingsGet(env, request) {
+  adminCheck(env, request);
+  const s = await getSettings(env);
+  const size = await getRepoSizeBytes(env);
+  return json({
+    ok: true,
+    uploads_enabled: s.uploads_enabled,
+    repo_size_bytes: size,
+    max_repo_bytes: MAX_REPO_BYTES,
+  });
+}
+
+// 全局设置：修改上传开关
+async function handleSettingsSet(env, request) {
+  adminCheck(env, request);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new UserError("请求体不是合法的 JSON");
+  }
+  if (typeof body.uploads_enabled !== "boolean") throw new UserError("uploads_enabled 需为布尔值", 400);
+  const s = await getSettings(env);
+  await saveSettings(env, body.uploads_enabled, s.sha);
+  return json({ ok: true, uploads_enabled: body.uploads_enabled });
+}
+
 async function handleHealth(env) {
   const missing = ["GH_TOKEN", "GH_OWNER", "GH_REPO"].filter((k) => !env[k]);
   const out = { ok: true, configured: missing.length === 0, missing };
@@ -784,6 +930,12 @@ export default {
         }
         if (rest === "blacklist" && method === "POST") {
           return await handleBlacklistAdd(env, request);
+        }
+        if (rest === "settings" && (method === "GET" || method === "HEAD")) {
+          return await handleSettingsGet(env, request);
+        }
+        if (rest === "settings" && method === "POST") {
+          return await handleSettingsSet(env, request);
         }
         let m = rest.match(/^sites\/([^/]+)$/);
         if (m && method === "DELETE") {

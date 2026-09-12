@@ -58,7 +58,7 @@ const MIME_MAP = {
   js: "text/javascript; charset=utf-8", svg: "image/svg+xml", png: "image/png", json: "application/json; charset=utf-8",
 };
 const mockExt = (p) => p.slice(p.lastIndexOf(".") + 1);
-const state = { files: new Map(), treeStatus: 200, serveOverride: null };
+const state = { files: new Map(), treeStatus: 200, serveOverride: null, repoSizeKb: null };
 
 state.files.set("sites/taken/index.html", "<h1>taken</h1>");
 
@@ -109,6 +109,10 @@ globalThis.fetch = async (input, init = {}) => {
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }
+  }
+  if (url.pathname === "/repos/o/r") {
+    if (state.repoSizeKb == null) return new Response("{}", { status: 404 });
+    return new Response(JSON.stringify({ size: state.repoSizeKb }), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/user") return new Response("{}", { status: 200 });
   return new Response("{}", { status: 404 });
@@ -646,6 +650,129 @@ await test("管理删除站点", async () => {
 await test("管理删除不存在的站点 → 404", async () => {
   const r = await worker.fetch(req("/api/admin/sites/no-such-site", { method: "DELETE", headers: AUTH }), ADMIN_ENV);
   assert.equal(r.status, 404);
+});
+
+// ── 全局上传开关 / 仓库容量闸门 / 单 IP 上传配额 ──
+const dayKeyNow = new Date().toISOString().slice(0, 10);
+const weekKeyNow = (() => {
+  const x = new Date();
+  x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); // 周一为一周起点
+  return x.toISOString().slice(0, 10);
+})();
+
+await test("上传成功后写入 IP 配额记账", async () => {
+  state.files.delete(".bay-quota.json");
+  const fd = new FormData();
+  fd.append("name", "q-acc");
+  fd.append("file", new File(["<h1>q</h1>"], "a.html", { type: "text/html" }));
+  const r = await worker.fetch(req("/api/upload", { method: "POST", headers: { "cf-connecting-ip": "198.51.100.55" }, body: fd }), ENV);
+  assert.equal(r.status, 200);
+  const q = JSON.parse(state.files.get(".bay-quota.json"));
+  assert.equal(q.byIp["198.51.100.55"].d, dayKeyNow);
+  assert.equal(q.byIp["198.51.100.55"].w, weekKeyNow);
+  assert.equal(q.byIp["198.51.100.55"].db, "<h1>q</h1>".length);
+});
+
+await test("单 IP 每日配额超限 → 429", async () => {
+  state.files.set(".bay-quota.json", JSON.stringify({ v: 1, byIp: { "198.51.100.56": { d: dayKeyNow, db: 19 * 1024 * 1024, w: weekKeyNow, wb: 19 * 1024 * 1024 } } }));
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.56" },
+    body: JSON.stringify({ name: "q-day", html: "<h1>" + "x".repeat(2 * 1024 * 1024) + "</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 429);
+  assert.ok((await r.json()).error.includes("20MB"));
+});
+
+await test("单 IP 每周配额超限 → 429（日配额未超）", async () => {
+  state.files.set(".bay-quota.json", JSON.stringify({ v: 1, byIp: { "198.51.100.57": { d: dayKeyNow, db: 3 * 1024 * 1024, w: weekKeyNow, wb: 48 * 1024 * 1024 } } }));
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.57" },
+    body: JSON.stringify({ name: "q-week", html: "<h1>" + "x".repeat(2 * 1024 * 1024 + 512 * 1024) + "</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 429);
+  assert.ok((await r.json()).error.includes("50MB"));
+});
+
+await test("配额未超时同 IP 可正常上传", async () => {
+  state.files.set(".bay-quota.json", JSON.stringify({ v: 1, byIp: { "198.51.100.58": { d: dayKeyNow, db: 1024 * 1024, w: weekKeyNow, wb: 1024 * 1024 } } }));
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.58" },
+    body: JSON.stringify({ name: "q-ok", html: "<h1>ok</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 200);
+});
+
+await test("全局上传开关关闭后上传被拒绝 → 503", async () => {
+  state.files.set(".bay-settings.json", JSON.stringify({ v: 1, uploads_enabled: false }));
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "sw-off", html: "<h1>x</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 503);
+  assert.ok((await r.json()).error.includes("关闭"));
+});
+
+await test("全局设置读取：开关状态与仓库体积", async () => {
+  state.repoSizeKb = 300 * 1024;
+  const j = await (await worker.fetch(req("/api/admin/settings", { headers: AUTH }), ADMIN_ENV)).json();
+  state.repoSizeKb = null;
+  assert.equal(j.ok, true);
+  assert.equal(j.uploads_enabled, false);
+  assert.equal(j.repo_size_bytes, 300 * 1024 * 1024);
+  assert.equal(j.max_repo_bytes, 800 * 1024 * 1024);
+});
+
+await test("全局设置：重新开启上传并恢复发布", async () => {
+  const j = await (await worker.fetch(req("/api/admin/settings", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ uploads_enabled: true }),
+  }), ADMIN_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(j.uploads_enabled, true);
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "sw-on", html: "<h1>x</h1>" }),
+  }), ENV);
+  assert.equal(r.status, 200);
+  state.files.delete(".bay-settings.json");
+});
+
+await test("settings 参数非法 → 400", async () => {
+  const r = await worker.fetch(req("/api/admin/settings", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify({ uploads_enabled: "yes" }),
+  }), ADMIN_ENV);
+  assert.equal(r.status, 400);
+});
+
+await test("仓库容量达到 800MB → 上传被拒绝 503", async () => {
+  state.repoSizeKb = 800 * 1024;
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "cap-full", html: "<h1>x</h1>" }),
+  }), ENV);
+  state.repoSizeKb = null;
+  assert.equal(r.status, 503);
+  assert.ok((await r.json()).error.includes("800MB"));
+});
+
+await test("仓库容量 799MB 时上传正常", async () => {
+  state.repoSizeKb = 799 * 1024;
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "cap-ok", html: "<h1>x</h1>" }),
+  }), ENV);
+  state.repoSizeKb = null;
+  assert.equal(r.status, 200);
 });
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败\n`);

@@ -95,6 +95,17 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
 .mini-btn.red:hover{background:rgba(255,59,48,.16)}
 .mini-btn:disabled{opacity:.5;cursor:wait}
 
+/* 全局设置 */
+.set-row{display:flex;align-items:center;gap:16px}
+.set-info{flex:1;min-width:0}
+.set-label{font-weight:600;font-size:15px}
+.set-desc{font-size:12.5px;color:var(--text3);margin-top:2px;line-height:1.5}
+.switch{position:relative;width:52px;height:32px;border-radius:980px;background:#e4e4e8;transition:background .25s;flex:none}
+.switch .knob{position:absolute;top:2px;left:2px;width:28px;height:28px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.18);transition:left .25s}
+.switch[aria-checked=true]{background:var(--green)}
+.switch[aria-checked=true] .knob{left:22px}
+.switch:disabled{opacity:.6;cursor:wait}
+
 /* 黑名单 */
 .bl-add{display:grid;grid-template-columns:1fr 120px auto;gap:8px;margin-bottom:18px}
 .bl-input{background:var(--fill);border:1.5px solid transparent;border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px;transition:all .2s}
@@ -165,6 +176,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
     <button class="logout-btn" id="logout-btn">退出登录</button>
   </div>
   <div class="banner hidden" id="banner"></div>
+
+  <section class="card" style="margin-bottom:22px">
+    <div class="card-head"><h2 class="card-title">全局设置</h2><span class="pill" id="repo-size">仓库体积 –</span></div>
+    <p class="card-sub">关闭上传开关可暂停所有新发布；仓库容量达到 800MB 也会自动停止上传。</p>
+    <div class="set-row">
+      <div class="set-info">
+        <div class="set-label">允许发布新站点</div>
+        <div class="set-desc" id="upload-state-desc">—</div>
+      </div>
+      <button type="button" class="switch" id="upload-switch" role="switch" aria-checked="true" aria-label="允许发布新站点"><span class="knob"></span></button>
+    </div>
+  </section>
 
   <div class="grid">
     <section class="card">
@@ -253,7 +276,7 @@ function unlock(){
         sessionStorage.setItem(TOKEN_KEY, token);
         $('login-wrap').classList.add('hidden');
         $('panel').classList.remove('hidden');
-        loadSites(); loadBlacklist();
+        loadSites(); loadBlacklist(); loadSettings();
       } else {
         $('login-err').textContent = (j._status === 401) ? '密码错误，请重试。' : (j.error || '无法连接后台，请稍后再试。');
         token = sessionStorage.getItem(TOKEN_KEY) || '';
@@ -338,6 +361,53 @@ function loadSites(){
     });
 }
 
+/* ── 全局设置 ── */
+var uploadsEnabled = true;
+function renderSettings(){
+  var sw = $('upload-switch');
+  sw.setAttribute('aria-checked', uploadsEnabled ? 'true' : 'false');
+  $('upload-state-desc').textContent = uploadsEnabled
+    ? '上传功能已开启，用户可以发布新站点。'
+    : '上传功能已关闭，新发布请求会被拒绝（503）。';
+}
+function loadSettings(){
+  api('/api/admin/settings')
+    .then(function(r){ return r.json().then(function(j){ j._status = r.status; return j; }); })
+    .then(function(j){
+      if(!j.ok){ return; }
+      uploadsEnabled = j.uploads_enabled !== false;
+      renderSettings();
+      if(typeof j.repo_size_bytes === 'number' && j.max_repo_bytes){
+        var pct = Math.min(100, j.repo_size_bytes / j.max_repo_bytes * 100);
+        $('repo-size').textContent = fmtBytes(j.repo_size_bytes) + ' / ' + fmtBytes(j.max_repo_bytes) + '（' + Math.round(pct) + '%）';
+      } else {
+        $('repo-size').textContent = '仓库体积未知';
+      }
+    })
+    .catch(function(){});
+}
+$('upload-switch').onclick = function(){
+  var sw = this;
+  sw.disabled = true;
+  api('/api/admin/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploads_enabled: !uploadsEnabled })
+  })
+    .then(function(r){ return r.json().then(function(j){ j._status = r.status; return j; }); })
+    .then(function(j){
+      if(j.ok){
+        uploadsEnabled = j.uploads_enabled;
+        renderSettings();
+        showMsg($('sites-msg'), uploadsEnabled ? '已开启上传功能' : '已关闭上传功能', 'ok');
+      } else {
+        showMsg($('sites-msg'), '设置失败：' + (j.error || j._status), 'err');
+      }
+    })
+    .catch(function(e){ showMsg($('sites-msg'), '设置失败：' + e.message, 'err'); })
+    .finally(function(){ sw.disabled = false; });
+};
+
 /* ── 黑名单 ── */
 function blRow(e){
   var div = document.createElement('div'); div.className = 'bl-row';
@@ -413,7 +483,7 @@ if(token){
       if(j.ok){
         $('login-wrap').classList.add('hidden');
         $('panel').classList.remove('hidden');
-        loadSites(); loadBlacklist();
+        loadSites(); loadBlacklist(); loadSettings();
       } else {
         sessionStorage.removeItem(TOKEN_KEY);
         token = '';

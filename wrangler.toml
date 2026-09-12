@@ -7,15 +7,23 @@ main = "src/index.js"
 compatibility_date = "2025-06-01"
 
 # ── 环境变量配置 ─────────────────────────────────────────────
-# GH_TOKEN 不要写在这里！用命令设置密钥:
-#   npx wrangler secret put GH_TOKEN
-# Token 需要 repo（或 contents）读写权限: https://github.com/settings/tokens
-#
-# 以下三个变量按你的 GitHub 仓库修改:
-[vars]
-GH_OWNER = "your-github-username"
-GH_REPO = "your-repo-name"
-GH_BRANCH = "main"
+# 重要：本文件不写入任何 [vars] 占位符。
+# 如果在这里定义 [vars]，每次 `npx wrangler deploy` 都会把其中的值覆盖到
+# Cloudflare 控制台已配置的同名变量，导致"控制台里改完，部署后又被改回去"。
+# 请在远端按以下方式之一配置变量（本地开发用 .dev.vars，仅本地生效）：
 
-# 可选: GitHub Enterprise 自建实例可覆盖 API 地址 (默认 https://api.github.com)
-# GH_API = "https://api.github.com"
+# 方式一（推荐）：Cloudflare 控制台
+#   Workers → 你的 Worker → 设置 → 变量与机密 → 添加变量：
+#     GH_OWNER  = 你的 GitHub 用户名 / 组织名
+#     GH_REPO   = 存储站点文件的仓库名
+#     GH_BRANCH = 存储分支（需已存在，默认 main）
+#     可选：GH_API = 自建 GitHub Enterprise 的 API 地址（默认 https://api.github.com）
+
+# 方式二：命令行写入（密钥或普通变量均可，同样不会被 deploy 覆盖）
+#   npx wrangler secret put GH_OWNER
+#   npx wrangler secret put GH_REPO
+#   npx wrangler secret put GH_BRANCH
+
+# 密钥（敏感信息，绝对不要写入仓库）：
+#   npx wrangler secret put GH_TOKEN        # GitHub Token，需 repo（或 contents）读写权限
+#   npx wrangler secret put ADMIN_PASSWORD  # 管理后台 /admin 的登录密码
