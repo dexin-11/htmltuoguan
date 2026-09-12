@@ -408,6 +408,34 @@ await test("站点 .bay.json 被 base64 化存储时元数据仍正确解析", a
   assert.equal(it.expire_at, 9999531999999);
 });
 
+// 图片被以 base64 文本误存时，服务端自愈解码为真实图片字节（历史 bug 修复）
+await test("图片被以 base64 文本误存时仍解码为真实图片字节", async () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8]);
+  let s = "";
+  for (const b of png) s += String.fromCharCode(b);
+  state.files.set("sites/z1x/img/heal.png", btoa(s)); // 历史 bug：整体存成了 base64 文本
+  const r = await worker.fetch(req("/z1x/img/heal.png"), ENV);
+  state.files.delete("sites/z1x/img/heal.png");
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").includes("image/png"));
+  const out = new Uint8Array(await r.arrayBuffer());
+  assert.deepEqual([...out], [...png]);
+});
+
+// 正常存储的二进制图片按原样返回，不被误判为 base64 解码
+await test("正常存储的二进制图片按原样返回", async () => {
+  const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x02, 0x03]); // 含非 base64 字符
+  let s = "";
+  for (const b of gif) s += String.fromCharCode(b);
+  state.files.set("sites/z1x/img/ok.gif", s);
+  const r = await worker.fetch(req("/z1x/img/ok.gif"), ENV);
+  state.files.delete("sites/z1x/img/ok.gif");
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").includes("image/gif"));
+  const out = new Uint8Array(await r.arrayBuffer());
+  assert.deepEqual([...out], [...gif]);
+});
+
 await test("GET /z1x/style.css 返回 CSS 类型", async () => {
   const r = await worker.fetch(req("/z1x/style.css"), ENV);
   assert.equal(r.status, 200);

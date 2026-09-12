@@ -74,6 +74,44 @@ function b64DecodeTextMaybe(text) {
   return u ? u : text;
 }
 
+// 二进制文件（图片/字体等）的已知魔数：用于识别"整体为 base64 文本"的误存数据
+const BINARY_MAGICS = [
+  [0x89, 0x50, 0x4e, 0x47], // PNG
+  [0xff, 0xd8, 0xff], // JPEG
+  [0x47, 0x49, 0x46, 0x38], // GIF
+  [0x52, 0x49, 0x46, 0x46], // WEBP/RIFF（随后校验 WEBP 标记）
+  [0x00, 0x00, 0x01, 0x00], // ICO
+  [0x42, 0x4d], // BMP
+  [0x77, 0x4f, 0x46, 0x46], // WOFF (wOFF)
+  [0x77, 0x4f, 0x46, 0x32], // WOFF2 (wOF2)
+];
+
+// 判断字节流是否整体为合法 base64 文本，且解码后命中已知二进制魔数；
+// 若是则返回解码字节（用于自愈被以 base64 文本误存的图片/字体），否则返回 null。
+// 与 b64ToBytesMaybe 不同：二进制解码后不是合法 UTF-8，改用魔数判定，避免误伤正常二进制。
+function b64BinaryMaybe(bytes) {
+  if (!bytes || bytes.length % 4 !== 0) return null;
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    const ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b === 43 || b === 47 || b === 61;
+    if (!ok) return null; // 含 base64 字母表以外的字节，按普通二进制原样返回
+  }
+  try {
+    let s = "";
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const hit = BINARY_MAGICS.some((m, mi) =>
+      m.every((b, i) => u[i] === b) && (mi !== 3 || (u[8] === 0x57 && u[9] === 0x45 && u[10] === 0x42 && u[11] === 0x50))
+    );
+    return hit ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- MIME 兜底表（优先使用 GitHub 返回的 Content-Type） ----------
 const MIME = {
   html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
@@ -714,7 +752,10 @@ async function serveFile(env, name, path, ctx) {
     // 历史站点文件被以 base64 文本误存：内容整体为合法 base64 时还原为真实文本
     body = bytes || b64DecodeTextMaybe(text);
   } else {
-    body = res.body;
+    // 图片/字体等二进制文件：先整体读入以支持自愈（站点单文件 ≤3MB，可接受）。
+    // 历史 bug 曾把二进制文件以 base64 文本写入仓库，此处若命中则解码为真实字节，否则原样返回。
+    const buf = new Uint8Array(await res.arrayBuffer());
+    body = b64BinaryMaybe(buf) || buf;
   }
 
   // Content-Type 一律以本地扩展名映射为准：GitHub 对 raw 请求会返回
