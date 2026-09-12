@@ -222,6 +222,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 
+/* 发布进度条 */
+.progress{margin-top:16px}
+.progress-track{height:6px;border-radius:980px;background:var(--fill-2);overflow:hidden}
+.progress-fill{height:100%;width:0;border-radius:inherit;background:var(--blue);transition:width .25s ease}
+.progress.working .progress-fill{width:45%!important;animation:slideX 1.1s ease-in-out infinite}
+@keyframes slideX{0%{transform:translateX(-120%)}100%{transform:translateX(340%)}}
+.progress-label{font-size:12.5px;color:var(--text3);margin-top:6px;min-height:18px}
+
 /* 消息与结果 */
 .msg{margin-top:16px;font-size:14px;border-radius:var(--r-sm);padding:12px 14px;line-height:1.5}
 .msg:empty{display:none}
@@ -452,6 +460,11 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         <span id="publish-label">发布我的网页</span>
       </button>
 
+      <div class="progress hidden" id="progress" role="status" aria-live="polite">
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <p class="progress-label" id="progress-label"></p>
+      </div>
+
       <div class="msg err hidden" id="msg" role="alert"></div>
 
       <div class="result hidden" id="result">
@@ -591,6 +604,15 @@ function setFile(f){
   $('chip-size').textContent = fmtBytes(f.size);
   $('file-chip').classList.remove('hidden');
   setErr($('msg'), '');
+
+  // 选择文件后即开始上传：切到"文件"页签，未填名字时按文件名自动生成项目名
+  switchTab('file');
+  var nameInput = $('name-input');
+  if(!nameInput.value.trim()){
+    var slug = slugFromName(f.name);
+    if(slug){ nameInput.value = slug; refreshNameStatus(); }
+  }
+  publish();
 }
 fi.onchange = function(){ setFile(this.files[0]); };
 $('chip-remove').onclick = function(){ currentFile = null; fi.value = ''; $('file-chip').classList.add('hidden'); };
@@ -643,26 +665,75 @@ $('name-input').addEventListener('input', function(){
   });
 })();
 
-/* 发布 */
+/* 发布（含上传进度条） */
+function slugFromName(n){
+  var s = (n || '').toLowerCase()
+    .replace(/\.[^.]+$/, '')            // 去掉扩展名
+    .replace(/[^a-z0-9]+/g, '-')        // 非字母数字 → 连字符
+    .replace(/^-+|-+$/g, '');           // 去掉首尾连字符
+  if(s.length > 40) s = s.slice(0, 40);
+  return s.replace(/^-+|-+$/g, '');
+}
+function showProgress(){ $('progress').classList.remove('hidden'); }
+function hideProgress(){
+  $('progress').classList.add('hidden');
+  $('progress-fill').classList.remove('working');
+  $('progress-fill').style.width = '0';
+  $('progress-label').textContent = '';
+}
+function setProgress(pct, label){
+  $('progress-fill').classList.remove('working');
+  $('progress-fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  $('progress-label').textContent = label || '';
+}
+function setWorking(label){
+  $('progress-fill').classList.add('working');
+  $('progress-fill').style.width = '';
+  $('progress-label').textContent = label || '';
+}
+// 用 XHR 发送上传，支持请求体上传进度的回调
+function uploadWithProgress(opts, onProgress){
+  return new Promise(function(resolve, reject){
+    var xhr = new XMLHttpRequest();
+    xhr.open(opts.method || 'POST', '/api/upload', true);
+    xhr.upload.onprogress = function(e){
+      if(e.lengthComputable && onProgress) onProgress(Math.round(e.loaded / e.total * 100));
+    };
+    xhr.onload = function(){
+      var j = null;
+      try { j = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch(e){ j = null; }
+      if(!j){ resolve({ ok: false, error: '服务器返回了异常响应 (HTTP ' + xhr.status + ')' }); return; }
+      j._status = xhr.status;
+      resolve(j);
+    };
+    xhr.onerror = function(){ reject(new Error('网络错误，请稍后再试。')); };
+    if(opts.headers){
+      for(var k in opts.headers) xhr.setRequestHeader(k, opts.headers[k]);
+    }
+    xhr.send(opts.body);
+  });
+}
 $('publish-btn').onclick = publish;
 function publish(){
   if(busy) return;
   var name = $('name-input').value.trim().toLowerCase();
-  if(!NAME_RE.test(name)){ setErr($('msg'), '请先在第 2 步填一个合法的项目名（小写字母、数字、连字符）。'); return; }
+  if(!NAME_RE.test(name)){ setErr($('msg'), '请先填一个合法的项目名（小写字母、数字、连字符），或直接选择文件自动命名。'); return; }
   if(takenNames.indexOf(name) >= 0){ setErr($('msg'), '项目名 "' + name + '" 已被占用，请换一个。'); return; }
 
-  var opts;
-  if(tab === 'file'){
-    if(!currentFile){ setErr($('msg'), '请先在第 1 步选择一个 ZIP 或 HTML 文件。'); return; }
+  var isFile, opts, total;
+  if(tab === 'file' && currentFile){
+    isFile = true;
     var fd = new FormData();
     fd.append('name', name);
     fd.append('expiry', expiry);
     fd.append('file', currentFile);
     opts = { method: 'POST', body: fd };
+    total = currentFile.size || 0;
   } else {
     var html = $('paste-area').value || '';
-    if(!html.trim()){ setErr($('msg'), '请先在第 1 步粘贴 HTML 代码。'); return; }
+    if(!html.trim()){ setErr($('msg'), '请先粘贴 HTML 代码，或选择要上传的文件。'); return; }
     opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, html: html, expiry: expiry }) };
+    total = 0;
   }
 
   busy = true;
@@ -671,35 +742,48 @@ function publish(){
   btn.innerHTML = '<span class="spinner"></span><span>正在发布…</span>';
   setErr($('msg'), '');
   $('result').classList.add('hidden');
+  showProgress();
 
-  fetch('/api/upload', opts)
-    .then(function(r){
-      return r.json().then(function(j){ j._status = r.status; return j; })
-        .catch(function(){ return { ok: false, error: '服务器返回了异常响应 (HTTP ' + r.status + ')' }; });
-    })
-    .then(function(j){
-      if(j.ok){
-        var link = location.origin + j.url;
-        $('result-link').textContent = link;
-        $('result-link').href = link;
-        $('open-btn').href = link;
-        $('result-sub').textContent = '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
-        $('result').classList.remove('hidden');
-        if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
-        refreshNameStatus();
-        loadSites();
-        $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      } else {
-        var m = j.error || ('HTTP ' + j._status);
-        setErr($('msg'), '发布没成功：' + m + (j._status === 409 ? '（换个项目名再试）' : ''));
-      }
-    })
-    .catch(function(e){ setErr($('msg'), '网络出了点问题：' + e.message + '，请稍后再试。'); })
-    .finally(function(){
-      busy = false;
-      btn.disabled = false;
-      btn.innerHTML = '<span id="publish-label">发布我的网页</span>';
-    });
+  var done = onResult;
+  var fail = onResultError;
+  var finish = onPublishDone;
+  if(isFile && total){
+    setProgress(0, '正在上传 0%');
+    uploadWithProgress(opts, function(pct){
+      if(pct >= 100) setWorking('文件已上传，正在部署到 GitHub…');
+      else setProgress(pct, '正在上传 ' + pct + '%');
+    }).then(done, fail).finally(finish);
+  } else {
+    setWorking('正在部署到 GitHub…');
+    uploadWithProgress(opts, null).then(done, fail).finally(finish);
+  }
+}
+function onResult(j){
+  if(j.ok){
+    var link = location.origin + j.url;
+    $('result-link').textContent = link;
+    $('result-link').href = link;
+    $('open-btn').href = link;
+    $('result-sub').textContent = '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
+    $('result').classList.remove('hidden');
+    if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
+    refreshNameStatus();
+    loadSites();
+    $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    var m = j.error || ('HTTP ' + j._status);
+    setErr($('msg'), '发布没成功：' + m + (j._status === 409 ? '（换个项目名再试）' : ''));
+  }
+}
+function onResultError(e){
+  setErr($('msg'), '网络出了点问题：' + e.message + '，请稍后再试。');
+}
+function onPublishDone(){
+  busy = false;
+  var btn = $('publish-btn');
+  btn.disabled = false;
+  btn.innerHTML = '<span>发布我的网页</span>';
+  hideProgress();
 }
 
 /* 复制链接 */
