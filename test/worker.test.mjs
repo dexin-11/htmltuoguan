@@ -387,6 +387,23 @@ await test("GET /z1x/ 渲染 index.html", async () => {
   assert.equal(await r.text(), "<h1>z1-root</h1>");
 });
 
+// 历史站点的文件被以 base64 文本误存进仓库：GitHub raw 返回的就是 base64 字符串，Worker 应还原为真实内容
+await test("站点文件被以 base64 文本误存时仍能解码渲染为 HTML", async () => {
+  state.serveOverride = { path: "sites/z1x/index.html", ct: "text/html; charset=utf-8", body: btoa("<h1>z1-root</h1>") };
+  const r = await worker.fetch(req("/z1x/"), ENV);
+  state.serveOverride = null;
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), "<h1>z1-root</h1>");
+});
+
+// .bay.json 被以 base64 文本误存时，getMeta 仍能解析出真实有效期（不再是"永久"）
+await test("站点 .bay.json 被 base64 化存储时元数据仍正确解析", async () => {
+  state.files.set("sites/z1x/.bay.json", btoa('{"v":1,"created_at":1,"expire_at":9999531999999}')); // 未来时间戳
+  const j = await (await worker.fetch(req("/api/sites"), ENV)).json();
+  const it = j.sites.find((s) => s.name === "z1x");
+  assert.equal(it.expire_at, 9999531999999);
+});
+
 await test("GET /z1x/style.css 返回 CSS 类型", async () => {
   const r = await worker.fetch(req("/z1x/style.css"), ENV);
   assert.equal(r.status, 200);

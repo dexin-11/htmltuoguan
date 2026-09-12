@@ -48,6 +48,29 @@ function toBase64(bytes) {
   return btoa(s);
 }
 
+// 判断一段文本是否整体为合法 base64 且解码后是有效 UTF-8，若是则返回解码字节，否则返回 null。
+// 用于自愈历史上被以 base64 文本形式误存进仓库的站点文件（例如 .bay.json、index.html）：
+// 正常 HTML/CSS 含大量非 base64 字符集符号，因此不会误判；只有内容恰为 base64 字符串时才会命中。
+function b64ToBytesMaybe(text) {
+  const s = String(text).replace(/\s+/g, "");
+  if (!s || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) return null;
+  try {
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    new TextDecoder("utf-8", { fatal: true }).decode(u); // 解码结果必须是有效 UTF-8 才采用
+    return u;
+  } catch {
+    return null;
+  }
+}
+
+// 把可能被 base64 化的文本还原为解码字节（还原失败时返回原文本）
+function b64DecodeTextMaybe(text) {
+  const u = b64ToBytesMaybe(text);
+  return u ? u : text;
+}
+
 // ---------- MIME 兜底表（优先使用 GitHub 返回的 Content-Type） ----------
 const MIME = {
   html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
@@ -264,7 +287,10 @@ async function getMeta(env, name) {
   try {
     const f = await readRepoFile(env, `sites/${name}/${META_FILE}`, true);
     if (f) {
-      const j = JSON.parse(f.text);
+      // 历史站点 .bay.json 可能被以 base64 文本存储：先还原成真实 JSON 文本再解析
+      const d = b64ToBytesMaybe(f.text);
+      const txt = d ? new TextDecoder("utf-8").decode(d) : f.text;
+      const j = JSON.parse(txt);
       if (j && typeof j.expire_at === "number") return j;
     }
   } catch {
@@ -663,18 +689,19 @@ async function serveFile(env, name, path, ctx) {
   let body;
   if (isTextLike) {
     const text = await res.text();
-    body = text;
+    let bytes;
     try {
       const j = JSON.parse(text);
       if (j && typeof j.content === "string" && j.encoding === "base64") {
         const bin = atob(j.content.replace(/\s+/g, ""));
-        const bytes = new Uint8Array(bin.length);
+        bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        body = bytes;
       }
     } catch {
-      // 不是 JSON，即正常文件内容，保持原样
+      bytes = null;
     }
+    // 历史站点文件被以 base64 文本误存：内容整体为合法 base64 时还原为真实文本
+    body = bytes || b64DecodeTextMaybe(text);
   } else {
     body = res.body;
   }
