@@ -132,6 +132,10 @@ globalThis.fetch = async (input, init = {}) => {
         return new Response('{"message":"Not Found"}', { status: 404 });
       }
       const raw = state.files.get(path);
+      // 目录探测（siteExists）：路径本身不是文件，但其下有文件 => 视为站点目录存在
+      if (raw == null && [...state.files.keys()].some((k) => k.startsWith(path + "/"))) {
+        return new Response(JSON.stringify([{ name: "x", path, type: "dir" }]), { status: 200, headers: { "content-type": "application/json" } });
+      }
       if (raw == null) return new Response('{"message":"Not Found"}', { status: 404 });
       const accept = headers["Accept"] || headers.accept || "";
       // 模拟 GitHub raw 媒体类型可能出现的各种异常 Content-Type / 响应体（serveFile 使用）

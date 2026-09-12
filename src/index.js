@@ -323,6 +323,15 @@ async function deleteSite(env, name, blobs) {
   await deleteTree(env, `sites/${name}`, `cleanup(html-hosting): 过期删除 ${name}`);
 }
 
+// 轻量探测站点目录是否存在（非递归、单次请求）。删除时用它替代整仓库递归树扫描：
+// 仓库所属文件越多，git/trees/**?recursive=1 全量扫描就越慢，而按 sites/{name} 子树整体
+// 删除根本不需要这份文件清单，仅需确认目录存在以正确返回 404。
+async function siteExists(env, name) {
+  const { owner, repo } = ghConfig(env);
+  const res = await ghFetch(env, `/repos/${owner}/${repo}/contents/sites/${encodeURIComponent(name)}`);
+  return res.status !== 404;
+}
+
 // 项目列表接口：附带有效期信息，顺带异步清理已过期站点
 async function handleListSites(env, ctx) {
   const blobs = await getTree(env);
@@ -857,14 +866,12 @@ async function handleAdminSites(env, request) {
   return json({ ok: true, sites: rows });
 }
 
-// 删除项目（整个目录）
+// 删除项目（整个目录）：先轻量探测目录存在（避免全仓库递归树扫描），再按子树整体删除
 async function handleAdminDelete(env, request, name) {
   adminCheck(env, request);
   if (!NAME_RE.test(name)) throw new UserError("项目名不合法", 400);
-  const blobs = await getTree(env);
-  const s = sitesFromTree(blobs || []).get(name);
-  if (!s) throw new UserError("项目不存在", 404);
-  await deleteSite(env, name, s.paths);
+  if (!(await siteExists(env, name))) throw new UserError("项目不存在", 404);
+  await deleteSite(env, name);
   return json({ ok: true, name });
 }
 

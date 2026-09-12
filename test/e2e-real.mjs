@@ -4,13 +4,13 @@
 // 并复现"站点文件被以 base64 文本误存"的乱码场景，确认 serveFile 自愈解码。
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, statSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, statSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import worker from "../src/index.js";
 
 const ORIGIN = "https://bay.test";
-const ENV = { GH_TOKEN: "t", GH_OWNER: "o", GH_REPO: "r", GH_BRANCH: "main" };
+const ENV = { GH_TOKEN: "t", GH_OWNER: "o", GH_REPO: "r", GH_BRANCH: "main", ADMIN_PASSWORD: "admin-secret" };
 const b64 = (u) => Buffer.from(u).toString("base64");
 
 // ---------- 1) 生成真实 ZIP（含嵌套目录与二进制图片） ----------
@@ -75,7 +75,10 @@ globalThis.fetch = async (input, init = {}) => {
   if (P === "/repos/o/r/git/trees" && method === "POST") {
     const body = JSON.parse(init.body || "{}");
     for (const e of body.tree || []) {
-      if (e.content) {
+      if (e.type === "tree" && body.base_tree && e.path) {
+        // deleteTree：用空子树覆盖该目录 => 移除目录及其下全部文件
+        rmSync(join(repo, e.path), { recursive: true, force: true });
+      } else if (e.content) {
         const f = join(repo, e.path);
         mkdirSync(dirname(f), { recursive: true });
         writeFileSync(f, Buffer.from(e.content.replace(/\s+/g, ""), "base64"));
@@ -86,7 +89,15 @@ globalThis.fetch = async (input, init = {}) => {
   if (P.startsWith("/repos/o/r/contents/")) {
     const fileKey = decodeURIComponent(P.slice("/repos/o/r/contents/".length));
     const abs = join(repo, fileKey);
-    if (!statSync(abs, { throwIfNoEntry: false })) return new Response("{}", { status: 404 });
+    const st = statSync(abs, { throwIfNoEntry: false });
+    if (!st) return new Response("{}", { status: 404 });
+    // 目录探测（siteExists）：路径是目录时返回目录列表（非递归、单次请求，替代整仓库树扫描）
+    if (st.isDirectory()) {
+      return new Response(
+        JSON.stringify(readdirSync(abs).map((n) => ({ name: n, path: fileKey + "/" + n, type: statSync(join(abs, n)).isDirectory() ? "dir" : "file" }))),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
     const bytes = readFileSync(abs);
     if (rawJson) // 站点回源：raw+json 返回真实字节
       return new Response(bytes, { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -163,6 +174,41 @@ const ctx = { waitUntil() {} };
   assert.ok(r.headers.get("content-type").startsWith("text/html"));
   assert.equal(txt, "<h1>POLLUTED-BASE64</h1>", "已 base64 化的 HTML 应被自愈解码，而非原样乱码");
   console.log("[自愈] 命中 base64 乱码场景 => /proof/ 正确还原为可读 HTML，Content-Type=%s", r.headers.get("content-type"));
+}
+
+// ---------- 8) 管理页删除：轻量探测目录 → 子树整体删除 ----------
+{
+  // 先恢复 index.html 为正常内容，删除前校验完整性
+  writeFileSync(join(repo, "sites/proof/index.html"), EXPECT_HTML, "utf8");
+  const before = totalRequests;
+  const r = await worker.fetch(
+    req("/api/admin/sites/proof", { method: "DELETE", headers: { "X-Admin-Token": "admin-secret" } }),
+    ENV,
+    ctx
+  );
+  const j = await r.json();
+  assert.equal(r.status, 200, "删除应成功: " + JSON.stringify(j));
+  assert.equal(j.ok, true);
+  // 磁盘上 sites/proof 整目录已被清空
+  assert.equal(statSync(join(repo, "sites/proof"), { throwIfNoEntry: false }), undefined, "站点目录应已被删除");
+  assert.ok(totalRequests - before <= 8, "删除子请求应受控（≤8），实际 " + (totalRequests - before));
+  console.log("[删除] /api/admin/sites/proof 200，GitHub 子请求=%s（避免整仓库树扫描）", totalRequests - before);
+
+  // 删除后访问 /proof/ → 404
+  const gone = await worker.fetch(req("/proof/"), ENV, ctx);
+  assert.equal(gone.status, 404);
+  console.log("[删除] 删除后 /proof/ 返回 404（站点已下线）");
+}
+
+// ---------- 9) 删除不存在的站点 → 404 ----------
+{
+  const r = await worker.fetch(
+    req("/api/admin/sites/nope", { method: "DELETE", headers: { "X-Admin-Token": "admin-secret" } }),
+    ENV,
+    ctx
+  );
+  assert.equal(r.status, 404);
+  console.log("[删除] 不存在的站点 → 404");
 }
 
 console.log("\n全部真实 ZIP 全流程断言通过 ✅");
