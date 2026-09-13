@@ -887,24 +887,35 @@ loadSites();
 
 /* 手机端：提供"粘贴剪贴板"按钮——部分手机键盘的粘贴会粘贴不全，内嵌浏览器长按也可能没有粘贴项 */
 if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstart' in window && window.matchMedia('(max-width: 900px)').matches)){
-  $('paste-area').placeholder = '请点击下方按钮粘贴完整代码（键盘上的粘贴会粘贴不全）';
+  var ta = $('paste-area');
+  ta.placeholder = '请点击下方按钮粘贴完整代码（键盘上的粘贴会粘贴不全）';
   var pasteBtn = $('paste-btn');
   pasteBtn.hidden = false;
+  /* 部分手机禁止网页读取剪贴板：引导用户长按输入框，用系统菜单里的"粘贴"（不是手机键盘上的粘贴按钮） */
+  var guideSystemPaste = function(){
+    ta.focus();
+    setErr($('msg'), '当前浏览器不允许直接读取剪贴板：请长按上面的输入框，在弹出的菜单中选择"粘贴"（用系统粘贴，不要用手机键盘上的粘贴按钮）。');
+  };
   pasteBtn.onclick = function(){
     var b = this, o = b.innerHTML;
     b.disabled = true;
     b.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-color:rgba(0,113,227,.35);border-top-color:#0071e3"></span><span>正在读取剪贴板…</span>';
+    if(!navigator.clipboard || !navigator.clipboard.readText){
+      b.disabled = false;
+      b.innerHTML = o;
+      guideSystemPaste();
+      return;
+    }
     navigator.clipboard.readText().then(function(t){
       if(!t || !t.trim()){
         setErr($('msg'), '剪贴板是空的：请先复制网页代码，再回来点「粘贴剪贴板内容」。');
         return;
       }
-      var ta = $('paste-area');
       ta.value = t;
       ta.focus();
       setErr($('msg'), '');
     }).catch(function(){
-      setErr($('msg'), '读取剪贴板失败（浏览器权限限制）：请改用系统剪贴板，长按粘贴框选择"粘贴"。');
+      guideSystemPaste();
     }).finally(function(){
       b.disabled = false;
       b.innerHTML = o;
