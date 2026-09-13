@@ -167,6 +167,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
 }
 .paste-btn:hover{background:var(--blue-soft);filter:brightness(.96)}
 .paste-btn:disabled{opacity:.55;cursor:wait}
+.paste-hint{margin-top:10px;font-size:13px;line-height:1.55;background:var(--red-soft);color:#c22b21;border-radius:var(--r-sm);padding:10px 12px}
 
 /* 输入框 */
 .text-input{
@@ -420,6 +421,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A2.5 2.5 0 0 1 2 12.5v-8A2.5 2.5 0 0 1 4.5 2h8A2.5 2.5 0 0 1 15 4.5V5"/></svg>
             <span>粘贴剪贴板内容</span>
           </button>
+          <p class="paste-hint" id="paste-hint" hidden role="alert"></p>
           <p class="block-help">整段代码会保存为一个网页，自动作为首页。</p>
         </div>
       </div>
@@ -891,15 +893,25 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
   ta.placeholder = '请点击下方按钮粘贴完整代码（键盘上的粘贴会粘贴不全）';
   var pasteBtn = $('paste-btn');
   pasteBtn.hidden = false;
+  /* 底部提示太靠下容易看不到，剪贴板相关提示就近显示在按钮下方 */
+  var hint = $('paste-hint');
+  var showPasteHint = function(text){
+    setErr($('msg'), '');
+    hint.textContent = text;
+    hint.classList.remove('hidden');
+    hint.scrollIntoView({block:'nearest'});
+  };
+  var clearPasteHint = function(){ hint.classList.add('hidden'); hint.textContent = ''; };
   /* 部分手机禁止网页读取剪贴板：引导用户长按输入框，用系统菜单里的"粘贴"（不是手机键盘上的粘贴按钮） */
   var guideSystemPaste = function(){
+    showPasteHint('当前浏览器不允许直接读取剪贴板：请长按上面的输入框，在弹出的菜单中选择"粘贴"（用系统粘贴，不要用手机键盘上的粘贴按钮）。');
     ta.focus();
-    setErr($('msg'), '当前浏览器不允许直接读取剪贴板：请长按上面的输入框，在弹出的菜单中选择"粘贴"（用系统粘贴，不要用手机键盘上的粘贴按钮）。');
   };
   pasteBtn.onclick = function(){
     var b = this, o = b.innerHTML;
     b.disabled = true;
     b.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-color:rgba(0,113,227,.35);border-top-color:#0071e3"></span><span>正在读取剪贴板…</span>';
+    clearPasteHint();
     if(!navigator.clipboard || !navigator.clipboard.readText){
       b.disabled = false;
       b.innerHTML = o;
@@ -908,11 +920,12 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
     }
     navigator.clipboard.readText().then(function(t){
       if(!t || !t.trim()){
-        setErr($('msg'), '剪贴板是空的：请先复制网页代码，再回来点「粘贴剪贴板内容」。');
+        showPasteHint('剪贴板是空的：请先复制网页代码，再回来点「粘贴剪贴板内容」。');
         return;
       }
       ta.value = t;
       ta.focus();
+      clearPasteHint();
       setErr($('msg'), '');
     }).catch(function(){
       guideSystemPaste();
