@@ -924,5 +924,46 @@ await test("/api/sites 只返回 mine 点名站点且不返回全部", async () 
   assert.ok(adm.sites.some((s) => s.name === "ip-b"));
 });
 
+// ── 名字占用即时校验（只返回布尔，绝不泄露列表/其他元数据） ──
+await test("/api/sites/check 只返回占用布尔，不泄露元数据", async () => {
+  const taken = await (await worker.fetch(req("/api/sites/check?name=taken"), ENV)).json();
+  assert.equal(taken.ok, true);
+  assert.equal(taken.taken, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(taken, "sites"), false); // 绝不返回列表
+  assert.equal(Object.prototype.hasOwnProperty.call(taken, "files"), false); // 绝不返回元数据
+  assert.equal(Object.prototype.hasOwnProperty.call(taken, "expire_at"), false);
+
+  const free = await (await worker.fetch(req("/api/sites/check?name=brand-new-free-name"), ENV)).json();
+  assert.equal(free.taken, false);
+
+  // 已过期名字视为可复用（未占用）
+  await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "checkexp", html: "<h1>x</h1>" }),
+  }), ENV);
+  state.files.set("sites/checkexp/.bay.json", JSON.stringify({ v: 1, created_at: 1, expire_at: Date.now() - 1 }));
+  const exp = await (await worker.fetch(req("/api/sites/check?name=checkexp"), ENV)).json();
+  assert.equal(exp.taken, false);
+
+  const bad = await worker.fetch(req("/api/sites/check?name=has_space"), ENV);
+  assert.equal(bad.status, 400);
+});
+
+// ── 隐私 / 安全响应头 ──
+await test("站点与控制台响应带隐私安全头（noindex 等）", async () => {
+  const site = await worker.fetch(req("/z1x/"), ENV);
+  assert.equal(site.headers.get("x-robots-tag"), "noindex, noarchive, nofollow");
+  assert.equal(site.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(site.headers.get("x-frame-options"), "DENY");
+  assert.equal(site.headers.get("x-content-type-options"), "nosniff");
+
+  const home = await worker.fetch(req("/"), ENV);
+  assert.equal(home.headers.get("x-robots-tag"), "noindex, noarchive, nofollow");
+
+  const api = await worker.fetch(req("/api/sites/check?name=taken"), ENV);
+  assert.equal(api.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(api.headers.get("x-robots-tag"), "noindex, noarchive, nofollow");
+});
+
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败\n`);
 process.exit(failed ? 1 : 0);

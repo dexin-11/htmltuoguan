@@ -14,6 +14,8 @@
 - 项目名唯一性校验（以仓库 `sites/` 实际目录为准，冲突返回 409）
 - ZIP 必须包含 `index.html` 校验；自动剥离外层文件夹（`site/index.html` → 根目录）；自动过滤 `__MACOSX`、`.DS_Store`
 - 项目列表展示（文件数 / 总大小 / 剩余有效期 / 访问链接；主页只显示**当前浏览器**发布过的站点——前端把浏览器本地记录 localStorage `bay.uploaded.sites` 里的名字作为 `?mine=` 交给 `/api/sites`，**后端只返回这些站点、不返回全部**，因此换 IP / 换网络也不丢自己的站点，也不会看到他人的站点）
+- 项目名字唯一性即时校验（`/api/sites/check`，仅返回占用布尔、不泄露列表；别人占用的名字也能在输入时提示，最终以发布时 409 为准）
+- **隐私保护**：主页只显示本浏览器发布的站点；后端不返回全部站点；`/api/sites` 与 `/api/sites/check` 均不泄露他人站点元数据；所有响应带 noindex（禁止搜索引擎收录托管内容）、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`
 - 站点静态服务：`/{项目名}/` 渲染 `index.html`，其余文件按原路径回源，子目录自动回退 `index.html`
 - **管理后台**（`/admin`）：输入环境变量 `ADMIN_PASSWORD` 密码登录后可查看全部站点（含上传者 IP）、一键续期或删除站点、将恶意 IP 加入黑名单（被拉黑 IP 无法再发布）、**全局上传开关**（一键暂停/恢复所有新发布，并实时显示仓库体积使用情况）
 - **单 IP 上传配额**：每个 IP 每天最多上传 20MB、每周最多 50MB（UTC 日/周窗口，按 Cloudflare 连接 IP 统计，超限返回 429）
@@ -85,6 +87,7 @@ npx wrangler deploy
 | `GET` | `/admin` | 管理后台（需输入 `ADMIN_PASSWORD` 密码） |
 | `GET` | `/{项目名}/` | 访问站点（`/{项目名}` 301 跳转至此；已过期返回 410） |
 | `GET` | `/api/sites?mine=a,b,c` | 项目列表 `{ok, sites:[...]}`。**只返回 `mine` 点名的站点**（前端把浏览器本地记录的名字作为 `?mine=` 传入），不传 `mine` 则返回空，后端不暴露全部站点 |
+| `GET` | `/api/sites/check?name=x` | 名字占用即时校验 `{ok, taken, warning?}`。只返回占用布尔，不泄露任何站点列表/元数据（已过期名字视为可复用） |
 | `GET` | `/api/health` | 配置自检 `{configured, missing, token_valid}` |
 | `POST` | `/api/upload` | 部署（见下） |
 | `GET` | `/api/admin/sites` | 管理：全部站点（含 `uploader_ip`），需 `X-Admin-Token` |

@@ -647,6 +647,27 @@ dz.addEventListener('drop', function(e){
 
 /* 项目名：即时校验 + 网址预览 */
 var nameTimer = null;
+var nameCheckSeq = 0;
+var lastCheck = null; // 最后一次服务端占用校验结果 {v, taken}，避免对同一名字重复请求
+function checkNameOnServer(v, s){
+  var seq = ++nameCheckSeq;
+  setStatus(s, '检查这个名字…', '');
+  fetch('/api/sites/check?name=' + encodeURIComponent(v))
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(seq !== nameCheckSeq) return; // 已输入新名字，忽略过时结果
+      lastCheck = { v: v, taken: !!(j && j.ok && j.taken) };
+      if(j && j.ok){
+        if(j.taken){ setStatus(s, '这个名字已经被占用了，换一个试试', 'bad'); }
+        else { setStatus(s, '这个名字可以用', 'ok'); }
+      } else if(j && j.warning){
+        setStatus(s, '暂时无法校验，发布时以服务端校验为准', '');
+      }
+    })
+    .catch(function(){
+      if(seq === nameCheckSeq) setStatus(s, '暂时无法校验，发布时以服务端校验为准', '');
+    });
+}
 function refreshNameStatus(){
   var v = $('name-input').value.trim().toLowerCase();
   var s = $('name-status');
@@ -663,13 +684,17 @@ function refreshNameStatus(){
   }
   if(v === 'api' || v === 'admin'){ setStatus(s, '这个名字被系统保留了，换一个吧', 'bad'); pv.hidden = true; return; }
   if(takenNames.indexOf(v) >= 0){ setStatus(s, '这个名字已经被占用了，换一个试试', 'bad'); return; }
-  setStatus(s, '这个名字可以用', 'ok');
+  if(lastCheck && lastCheck.v === v){
+    setStatus(s, lastCheck.taken ? '这个名字已经被占用了，换一个试试' : '这个名字可以用', lastCheck.taken ? 'bad' : 'ok');
+    return;
+  }
+  checkNameOnServer(v, s);
 }
 $('name-input').addEventListener('input', function(){
   var v = this.value.trim().toLowerCase();
   if(v !== this.value) this.value = v;
   clearTimeout(nameTimer);
-  nameTimer = setTimeout(refreshNameStatus, 120);
+  nameTimer = setTimeout(refreshNameStatus, 200);
 });
 
 /* 有效期选择 */

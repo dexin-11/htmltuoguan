@@ -32,10 +32,19 @@ class UserError extends Error {
   }
 }
 
+// 安全/隐私响应头：noindex 防止搜索引擎收录托管站点内容；no-referrer 抑制对外泄露来源；
+// nosniff 防止 MIME 嗅探；X-Frame-Options 防点击劫持。
+const secHeaders = () => ({
+  "X-Robots-Tag": "noindex, noarchive, nofollow",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+});
+
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...secHeaders() },
   });
 
 function encodePath(path) {
@@ -410,6 +419,18 @@ async function handleListSites(env, ctx, mineSet) {
   return { sites: out };
 }
 
+// 名字占用即时校验：只回答某个名字当前是否被占用（已过期视为可复用→未占用），
+// 不返回该站点的任何元数据，只给一个布尔值，避免向访问者泄露他人站点信息。
+// 仅用于前端输入提示，最终唯一性以发布接口的 409 为准。
+async function handleCheckSite(env, name) {
+  const blobs = await getTree(env);
+  if (blobs === null) return { taken: false, unknown: true };
+  const existing = sitesFromTree(blobs).get(name);
+  if (!existing) return { taken: false };
+  const meta = await getMeta(env, name);
+  return { taken: !isExpired(meta) };
+}
+
 // 写入单个文件到仓库；sha 存在则更新（否则创建）
 async function putFile(env, sitePath, bytes, message, sha) {
   const { owner, repo, branch } = ghConfig(env);
@@ -765,11 +786,7 @@ async function serveFile(env, name, path, ctx) {
 
   return new Response(body, {
     status: 200,
-    headers: {
-      "Content-Type": ct,
-      "Cache-Control": "public, max-age=300",
-      "X-Content-Type-Options": "nosniff",
-    },
+    headers: { "Content-Type": ct, "Cache-Control": "public, max-age=300", ...secHeaders() },
   });
 }
 
@@ -1028,7 +1045,7 @@ async function handleHealth(env) {
 const errorPage = (code, title, desc) =>
   new Response(
     `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${code} · 网页托管舱</title><style>body{background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;-webkit-font-smoothing:antialiased}div{text-align:center;padding:48px 40px;background:#fff;border-radius:24px;box-shadow:0 4px 24px rgba(0,0,0,.06);max-width:400px;margin:24px}h1{font-size:56px;margin:0 0 6px;letter-spacing:-.03em;background:linear-gradient(180deg,#1d1d1f 60%,#6e6e73);-webkit-background-clip:text;background-clip:text;color:transparent}p{color:#6e6e73;font-size:15px;line-height:1.6;margin:0 0 22px}a{display:inline-block;background:#0071e3;color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:11px 26px;border-radius:980px;transition:background .2s}a:hover{background:#0068d0}</style></head><body><div><h1>${code}</h1><p><b style="color:#1d1d1f">${title}</b><br>${desc}</p><a href="/">返回首页</a></div></body></html>`,
-    { status: code, headers: { "Content-Type": "text/html; charset=utf-8", ...(code === 410 ? { "Cache-Control": "no-store" } : {}) } }
+    { status: code, headers: { "Content-Type": "text/html; charset=utf-8", ...(code === 410 ? { "Cache-Control": "no-store" } : {}), ...secHeaders() } }
   );
 
 const notFoundPage = () => errorPage(404, "找不到这个网页", "它可能还没发布、名字写错了，或者已经过期下线。");
@@ -1061,7 +1078,7 @@ export default {
       // ---- 控制台页面 ----
       if (method === "GET" && (pathname === "/" || pathname === "/index.html")) {
         return new Response(UI_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...secHeaders() },
         });
       }
       if (pathname === "/favicon.ico") {
@@ -1071,7 +1088,7 @@ export default {
       }
       if (method === "GET" && (pathname === "/admin" || pathname === "/admin/")) {
         return new Response(ADMIN_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...secHeaders() },
         });
       }
 
@@ -1084,6 +1101,16 @@ export default {
         );
         const { sites, warning } = await handleListSites(env, ctx, mineSet);
         return json({ ok: true, sites, ...(warning ? { warning } : {}) });
+      }
+      if (pathname === "/api/sites/check" && (method === "GET" || method === "HEAD")) {
+        const name = (url.searchParams.get("name") || "").trim().toLowerCase();
+        if (!name || !NAME_RE.test(name)) return json({ ok: false, error: "项目名格式不正确" }, 400);
+        const r = await handleCheckSite(env, name);
+        return json({
+          ok: true,
+          taken: r.taken,
+          ...(r.unknown ? { warning: "仓库暂不可用，无法确认占用，发布时以服务端校验为准" } : {}),
+        });
       }
       if (pathname === "/api/upload" && method === "POST") {
         return await handleUpload(request, env);
