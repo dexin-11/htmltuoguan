@@ -859,7 +859,8 @@ function row(s){
 function loadSites(){
   var rb = $('refresh-btn');
   rb.classList.add('spin');
-  fetch('/api/sites')
+  // 把浏览器本地记录的名字作为 ?mine= 传给后端，后端只返回这些站点，不返回全部
+  fetch('/api/sites?mine=' + encodeURIComponent(myUploadedNames().join(',')))
     .then(function(r){ return r.json(); })
     .then(function(j){
       rb.classList.remove('spin');
@@ -869,11 +870,8 @@ function loadSites(){
         return;
       }
       if(j.warning) setBanner(j.warning);
-      var allSites = j.sites || [];
-      takenNames = allSites.map(function(s){ return s.name; });
-      // 只显示这台浏览器发布过的站点（用全部站点名做占用校验，用本地记录做展示过滤）
-      var mine = myUploadedNames();
-      var sites = allSites.filter(function(s){ return mine.indexOf(s.name) >= 0; });
+      var sites = j.sites || [];
+      takenNames = sites.map(function(s){ return s.name; });
       $('site-count').textContent = String(sites.length);
       var list = $('site-list');
       list.innerHTML = '';

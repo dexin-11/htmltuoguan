@@ -201,7 +201,7 @@ await test("GET /api/health 未配置时报告缺失变量", async () => {
 });
 
 await test("GET /api/sites 列出已有项目", async () => {
-  const j = await (await worker.fetch(req("/api/sites"), ENV)).json();
+  const j = await (await worker.fetch(req("/api/sites?mine=taken"), ENV)).json();
   assert.equal(j.ok, true);
   assert.ok(j.sites.some((s) => s.name === "taken" && s.files === 1));
 });
@@ -403,7 +403,7 @@ await test("站点文件被以 base64 文本误存时仍能解码渲染为 HTML"
 // .bay.json 被以 base64 文本误存时，getMeta 仍能解析出真实有效期（不再是"永久"）
 await test("站点 .bay.json 被 base64 化存储时元数据仍正确解析", async () => {
   state.files.set("sites/z1x/.bay.json", btoa('{"v":1,"created_at":1,"expire_at":9999531999999}')); // 未来时间戳
-  const j = await (await worker.fetch(req("/api/sites"), ENV)).json();
+  const j = await (await worker.fetch(req("/api/sites?mine=z1x"), ENV)).json();
   const it = j.sites.find((s) => s.name === "z1x");
   assert.equal(it.expire_at, 9999531999999);
 });
@@ -586,7 +586,7 @@ await test("/api/sites 携带有效期信息并在列表加载时清理过期站
   state.files.set("sites/pastdue/.bay.json", JSON.stringify({ v: 1, created_at: 1, expire_at: Date.now() - 1 }));
   const tasks = [];
   const ctx = { waitUntil(p) { tasks.push(p); } };
-  const j = await (await worker.fetch(req("/api/sites"), ENV, ctx)).json();
+  const j = await (await worker.fetch(req("/api/sites?mine=pastdue,taken,z1x"), ENV, ctx)).json();
   const pd = j.sites.find((s) => s.name === "pastdue");
   assert.equal(pd.expired, true);
   await Promise.allSettled(tasks);
@@ -620,7 +620,7 @@ await test("分支不存在时 /api/sites 返回空列表与警告", async () =>
 });
 
 await test("GET /api/sites 反映全部新上传项目", async () => {
-  const j = await (await worker.fetch(req("/api/sites"), ENV)).json();
+  const j = await (await worker.fetch(req("/api/sites?mine=taken,pasted1,single,z1x,z2x,z5x,exp3"), ENV)).json();
   const names = j.sites.map((s) => s.name);
   for (const n of ["taken", "pasted1", "single", "z1x", "z2x", "z5x", "exp3"]) assert.ok(names.includes(n), n);
   const z1 = j.sites.find((s) => s.name === "z1x");
@@ -893,8 +893,8 @@ await test("仓库容量 799MB 时上传正常", async () => {
   assert.equal(r.status, 200);
 });
 
-// ── 站点列表展示范围（不再按 IP 过滤；主页只显示本人由前端 localStorage 过滤） ──
-await test("/api/sites 返回全部站点（不再按访问 IP 过滤）", async () => {
+// ── 站点列表展示范围（后端按 ?mine= 名单过滤，不返回全部；不再按 IP 判断） ──
+await test("/api/sites 只返回 mine 点名站点且不返回全部", async () => {
   const up = (name, ip) =>
     worker.fetch(req("/api/upload", {
       method: "POST",
@@ -904,13 +904,19 @@ await test("/api/sites 返回全部站点（不再按访问 IP 过滤）", async
   assert.equal((await up("ip-a", "203.0.113.10")).status, 200);
   assert.equal((await up("ip-b", "203.0.113.11")).status, 200);
 
-  // 无 IP 头：返回全部
-  const all = await (await worker.fetch(req("/api/sites"), ENV)).json();
-  for (const n of ["ip-a", "ip-b"]) assert.ok(all.sites.some((s) => s.name === n), n);
+  // 不带 mine：后端不返回任何站点（不泄露全部）
+  const none = await (await worker.fetch(req("/api/sites"), ENV)).json();
+  for (const n of ["ip-a", "ip-b"]) assert.ok(!none.sites.some((s) => s.name === n), "不应返回 " + n);
 
-  // 携带任意访问 IP：同样返回全部（前端按浏览器本地记录过滤，服务端不再隐藏他人站点）
-  const a = await (await worker.fetch(req("/api/sites", { headers: { "cf-connecting-ip": "203.0.113.10" } }), ENV)).json();
-  for (const n of ["ip-a", "ip-b"]) assert.ok(a.sites.some((s) => s.name === n), "携带 IP 时仍应返回 ip-a/ip-b: " + n);
+  // mine 只含 ip-a：无论头部 IP 是谁，都只返回 ip-a
+  const a = await (await worker.fetch(req("/api/sites?mine=ip-a", { headers: { "cf-connecting-ip": "203.0.113.10" } }), ENV)).json();
+  const aNames = a.sites.map((s) => s.name);
+  assert.ok(aNames.includes("ip-a"), "应包含 ip-a");
+  assert.ok(!aNames.includes("ip-b"), "不应包含 ip-b");
+
+  // mine 同时包含两者且携带另一 IP：都能返回（证明过滤按点名名单，而非按 IP）
+  const both = await (await worker.fetch(req("/api/sites?mine=ip-a,ip-b", { headers: { "cf-connecting-ip": "203.0.113.11" } }), ENV)).json();
+  for (const n of ["ip-a", "ip-b"]) assert.ok(both.sites.some((s) => s.name === n), n);
 
   // 管理端不受影响，仍能看到全部站点
   const adm = await (await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ADMIN_ENV)).json();

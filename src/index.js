@@ -374,9 +374,10 @@ async function siteExists(env, name) {
 }
 
 // 项目列表接口：附带有效期信息，顺带异步清理已过期站点。
-// 一律返回全部已发布站点；「主页只显示本人上传」由前端根据浏览器本地记录（localStorage）过滤，
-// 不再依赖 IP 判断——IP 在代理/CDN 后不可靠，且会误显示/误隐藏他人站点。
-async function handleListSites(env, ctx) {
+// 后端不返回全部站点：只返回调用方通过请求参数 ?mine=a,b,c 点名的站点。
+// 「主页只显示本人上传」由前端把浏览器本地记录（localStorage）里的名字作为 mine 传过来，
+// 因此既不用按 IP 判断（代理/CDN 后不可靠），也不会把全部站点泄露给每个访问者。
+async function handleListSites(env, ctx, mineSet) {
   const blobs = await getTree(env);
   if (blobs === null) {
     return { sites: [], warning: "仓库或分支未找到，请检查 GH_OWNER / GH_REPO / GH_BRANCH 配置" };
@@ -398,8 +399,9 @@ async function handleListSites(env, ctx) {
     })
   );
   for (const r of results) {
+    if (r.expired) expired.push(r.s); // 过期站点无论是否点名都清理
+    if (mineSet && !mineSet.has(r.s.name)) continue; // 只见调用方点名的站点
     out.push(r.item);
-    if (r.expired) expired.push(r.s);
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   if (expired.length && ctx && typeof ctx.waitUntil === "function") {
@@ -1075,7 +1077,12 @@ export default {
 
       // ---- API ----
       if (pathname === "/api/sites" && (method === "GET" || method === "HEAD")) {
-        const { sites, warning } = await handleListSites(env, ctx);
+        // 只返回调用方点名的站点（前端传浏览器本地记录里的名字），后端不返回全部站点
+        const mineSet = new Set(
+          (url.searchParams.get("mine") || "")
+            .split(",").map((s) => s.trim().toLowerCase()).filter((n) => NAME_RE.test(n))
+        );
+        const { sites, warning } = await handleListSites(env, ctx, mineSet);
         return json({ ok: true, sites, ...(warning ? { warning } : {}) });
       }
       if (pathname === "/api/upload" && method === "POST") {

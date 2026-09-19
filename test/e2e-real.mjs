@@ -159,7 +159,7 @@ const ctx = { waitUntil() {} };
 
 // ---------- 6) 项目列表：有效期是具体时间，而非永久 ----------
 {
-  const j = await (await worker.fetch(req("/api/sites"), ENV, ctx)).json();
+  const j = await (await worker.fetch(req("/api/sites?mine=proof"), ENV, ctx)).json();
   const it = j.sites.find((s) => s.name === "proof");
   assert.ok(it && typeof it.expire_at === "number", "proof 有效期应为具体时间戳，而非永久");
   console.log("[列表] /api/sites 返回 proof，expire_at=%s（有确定过期时间，非永久）", it.expire_at);
