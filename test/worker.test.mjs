@@ -893,8 +893,8 @@ await test("仓库容量 799MB 时上传正常", async () => {
   assert.equal(r.status, 200);
 });
 
-// ── 站点列表按访问 IP 过滤 ──
-await test("/api/sites 只显示当前访问 IP 上传的项目", async () => {
+// ── 站点列表展示范围（不再按 IP 过滤；主页只显示本人由前端 localStorage 过滤） ──
+await test("/api/sites 返回全部站点（不再按访问 IP 过滤）", async () => {
   const up = (name, ip) =>
     worker.fetch(req("/api/upload", {
       method: "POST",
@@ -904,22 +904,13 @@ await test("/api/sites 只显示当前访问 IP 上传的项目", async () => {
   assert.equal((await up("ip-a", "203.0.113.10")).status, 200);
   assert.equal((await up("ip-b", "203.0.113.11")).status, 200);
 
-  // 无 IP 头（本地开发/代理未透传）：仍然返回全部，不影响本地调试
+  // 无 IP 头：返回全部
   const all = await (await worker.fetch(req("/api/sites"), ENV)).json();
   for (const n of ["ip-a", "ip-b"]) assert.ok(all.sites.some((s) => s.name === n), n);
 
-  // 访问 IP 203.0.113.10 只看到自己的 ip-a；ip-b 与无 uploader_ip 的 taken 均不可见
+  // 携带任意访问 IP：同样返回全部（前端按浏览器本地记录过滤，服务端不再隐藏他人站点）
   const a = await (await worker.fetch(req("/api/sites", { headers: { "cf-connecting-ip": "203.0.113.10" } }), ENV)).json();
-  const aNames = a.sites.map((s) => s.name);
-  assert.ok(aNames.includes("ip-a"), "应包含 ip-a");
-  assert.ok(!aNames.includes("ip-b"), "不应包含 ip-b");
-  assert.ok(!aNames.includes("taken"), "无 uploader_ip 的历史站点也不可见");
-
-  // 访问 IP 203.0.113.11 只看到自己的 ip-b
-  const b = await (await worker.fetch(req("/api/sites", { headers: { "cf-connecting-ip": "203.0.113.11" } }), ENV)).json();
-  const bNames = b.sites.map((s) => s.name);
-  assert.ok(bNames.includes("ip-b"), "应包含 ip-b");
-  assert.ok(!bNames.includes("ip-a"), "不应包含 ip-a");
+  for (const n of ["ip-a", "ip-b"]) assert.ok(a.sites.some((s) => s.name === n), "携带 IP 时仍应返回 ip-a/ip-b: " + n);
 
   // 管理端不受影响，仍能看到全部站点
   const adm = await (await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ADMIN_ENV)).json();

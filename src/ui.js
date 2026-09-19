@@ -498,7 +498,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
         </button>
       </div>
-      <p class="side-sub">这里会显示所有通过本工具发布的网页。</p>
+      <p class="side-sub">这里只会显示这台浏览器发布过的网页，不会展示他人的站点。</p>
 
       <div id="site-list"></div>
       <div class="empty" id="empty">
@@ -537,6 +537,22 @@ var OK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" strok
 var BAD_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>';
 var ZIP_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h6a3 3 0 0 1 3 3Z"/><path d="M12 11v2m0 2v2"/></svg>';
 var HTML_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0071e3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5M9 13h6M9 17h4"/></svg>';
+
+/* 上传记录：用浏览器本地记录（localStorage）记住「这台浏览器发布过哪些站点」，
+   主页只显示这些站点，不再依赖 IP 判断（IP 在代理/切换网络后会变，且会误显示他人站点）。 */
+var STORE_KEY = 'bay.uploaded.sites';
+function myUploadedNames(){
+  try{
+    var r = JSON.parse(localStorage.getItem(STORE_KEY));
+    return Array.isArray(r) ? r : [];
+  }catch(e){ return []; }
+}
+function rememberUploaded(name){
+  try{
+    var list = myUploadedNames();
+    if(list.indexOf(name) < 0){ list.push(name); localStorage.setItem(STORE_KEY, JSON.stringify(list)); }
+  }catch(e){}
+}
 
 function fmtBytes(n){
   if(!n) return '0 B';
@@ -769,6 +785,7 @@ function onResult(j){
     $('result-sub').textContent = '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
     $('result').classList.remove('hidden');
     if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
+    rememberUploaded(j.name);
     refreshNameStatus();
     loadSites();
     $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -852,8 +869,11 @@ function loadSites(){
         return;
       }
       if(j.warning) setBanner(j.warning);
-      var sites = j.sites || [];
-      takenNames = sites.map(function(s){ return s.name; });
+      var allSites = j.sites || [];
+      takenNames = allSites.map(function(s){ return s.name; });
+      // 只显示这台浏览器发布过的站点（用全部站点名做占用校验，用本地记录做展示过滤）
+      var mine = myUploadedNames();
+      var sites = allSites.filter(function(s){ return mine.indexOf(s.name) >= 0; });
       $('site-count').textContent = String(sites.length);
       var list = $('site-list');
       list.innerHTML = '';
