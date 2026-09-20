@@ -388,10 +388,11 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
 
       <!-- 第 1 步：内容 -->
       <div class="block">
-        <div class="block-head"><span class="block-num">1</span><span class="block-title">选择网页文件</span></div>
+        <div class="block-head"><span class="block-num">1</span><span class="block-title">选择内容</span></div>
         <div class="seg" role="tablist">
           <button type="button" class="seg-btn" id="tab-file" role="tab" aria-selected="false">上传文件</button>
           <button type="button" class="seg-btn active" id="tab-paste" role="tab" aria-selected="true">粘贴代码</button>
+          <button type="button" class="seg-btn" id="tab-redirect" role="tab" aria-selected="false">链接跳转</button>
         </div>
 
         <div id="pane-file" class="hidden">
@@ -423,6 +424,12 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
           </button>
           <p class="paste-hint" id="paste-hint" hidden role="alert"></p>
           <p class="block-help">整段代码会保存为一个网页，自动作为首页。</p>
+        </div>
+
+        <div id="pane-redirect" class="hidden">
+          <input class="text-input" id="redirect-input" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="例如：example.com 或 https://example.com/path" aria-label="跳转网址">
+          <p class="block-help">发布会把访问者自动重定向到这个网址，并显示一个过渡页面。无需上传内容。</p>
         </div>
       </div>
 
@@ -593,19 +600,24 @@ function copyText(text, btn){
   }
 }
 
-/* 分段控件：文件 / 粘贴 */
+/* 分段控件：文件 / 粘贴 / 链接跳转 */
 function switchTab(t){
   tab = t;
   $('tab-file').classList.toggle('active', t === 'file');
   $('tab-paste').classList.toggle('active', t === 'paste');
+  $('tab-redirect').classList.toggle('active', t === 'redirect');
   $('tab-file').setAttribute('aria-selected', t === 'file' ? 'true' : 'false');
   $('tab-paste').setAttribute('aria-selected', t === 'paste' ? 'true' : 'false');
+  $('tab-redirect').setAttribute('aria-selected', t === 'redirect' ? 'true' : 'false');
   $('pane-file').classList.toggle('hidden', t !== 'file');
   $('pane-paste').classList.toggle('hidden', t !== 'paste');
+  $('pane-redirect').classList.toggle('hidden', t !== 'redirect');
   if(t === 'paste') $('paste-area').focus();
+  if(t === 'redirect') $('redirect-input').focus();
 }
 $('tab-file').onclick = function(){ switchTab('file'); };
 $('tab-paste').onclick = function(){ switchTab('paste'); };
+$('tab-redirect').onclick = function(){ switchTab('redirect'); };
 
 /* 拖放上传 */
 var dz = $('dropzone'), fi = $('file-input');
@@ -772,9 +784,14 @@ function publish(){
     fd.append('file', currentFile);
     opts = { method: 'POST', body: fd };
     total = currentFile.size || 0;
+  } else if(tab === 'redirect'){
+    var redirect = $('redirect-input').value.trim();
+    if(!redirect){ setErr($('msg'), '请先填写要跳转到的网址。'); return; }
+    opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, redirect: redirect, expiry: expiry }) };
+    total = 0;
   } else {
     var html = $('paste-area').value || '';
-    if(!html.trim()){ setErr($('msg'), '请先粘贴 HTML 代码，或选择要上传的文件。'); return; }
+    if(!html.trim()){ setErr($('msg'), '请先粘贴 HTML 代码，或选择要上传的文件，或填写跳转网址。'); return; }
     opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, html: html, expiry: expiry }) };
     total = 0;
   }
@@ -807,7 +824,9 @@ function onResult(j){
     $('result-link').textContent = link;
     $('result-link').href = link;
     $('open-btn').href = link;
-    $('result-sub').textContent = '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
+    $('result-sub').textContent = j.redirect
+      ? '链接跳转已生效，访问者会自动跳转到 ' + j.redirect
+      : '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
     $('result').classList.remove('hidden');
     if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
     rememberUploaded(j.name);

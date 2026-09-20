@@ -242,6 +242,58 @@ await test("非法有效期 → 400", async () => {
   assert.equal(r.status, 400);
 });
 
+// ---- 链接跳转 ----
+await test("POST /api/upload 链接跳转：生成跳转页并记录目标网址", async () => {
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "go", redirect: "example.com", expiry: "7d" }),
+  }), ENV);
+  const j = await r.json();
+  assert.equal(j.ok, true);
+  assert.equal(j.url, "/go/");
+  assert.equal(j.files, 1);
+  assert.equal(j.redirect, "https://example.com/");
+  const html = state.files.get("sites/go/index.html");
+  // 内存 mock 把 UTF-8 字节存为 latin1 字符串，校验中文前先解码为真实文本
+  const htmlUtf8 = new TextDecoder().decode(new Uint8Array([...html].map((c) => c.charCodeAt(0))));
+  assert.ok(htmlUtf8.includes("window.location.replace"), "应包含 JS 跳转");
+  assert.ok(htmlUtf8.includes("https://example.com/"), "应包含目标网址");
+  assert.ok(htmlUtf8.includes("正在跳转到"), "应包含过渡页标题");
+  const meta = JSON.parse(state.files.get("sites/go/.bay.json"));
+  assert.equal(meta.redirect, "https://example.com/");
+});
+
+await test("GET /go/ 返回跳转页（text/html，含 meta 刷新与兜底链接）", async () => {
+  const r = await worker.fetch(req("/go/"), ENV);
+  const txt = await r.text();
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/html"));
+  assert.ok(txt.includes('url=https://example.com/'), "meta 刷新应指向目标");
+  assert.ok(txt.includes('href="https://example.com/"'), "兜底链接应指向目标");
+});
+
+await test("链接跳转：带协议路径的网址被规范化保留", async () => {
+  const j = await (await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "go2", redirect: "https://example.com/a?b=1&c=2" }),
+  }), ENV)).json();
+  assert.equal(j.ok, true);
+  assert.equal(j.redirect, "https://example.com/a?b=1&c=2");
+});
+
+await test("非法跳转网址 → 400", async () => {
+  for (const bad of ["", "   ", "javascript:alert(1)", "ftp://x"]) {
+    const r = await worker.fetch(req("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "go-bad", redirect: bad }),
+    }), ENV);
+    assert.equal(r.status, 400, "redirect=" + JSON.stringify(bad));
+  }
+});
+
 await test("项目名重复 → 409", async () => {
   const r = await worker.fetch(req("/api/upload", {
     method: "POST",

@@ -800,14 +800,81 @@ function validateName(raw) {
   return name;
 }
 
+// ---------- 链接跳转 ----------
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function jsString(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/</g, "\\x3c");
+}
+
+// 规范化跳转网址：补全协议、校验 http/https，返回规范化后的完整 URL
+function normalizeRedirect(raw) {
+  let s = String(raw || "").trim();
+  if (!s) throw new UserError("请填写要跳转的网址");
+  // 是否已显式携带协议（scheme:）；有则必须是 http/https，否则补全为 https://
+  const m = s.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  if (m) {
+    const scheme = m[1].toLowerCase();
+    if (scheme !== "http" && scheme !== "https") throw new UserError("跳转地址仅支持 http 或 https 协议");
+    if (!/^https?:\/\//i.test(s)) s = scheme + "://" + s.slice(s.indexOf(":") + 1);
+  } else {
+    s = "https://" + s;
+  }
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    throw new UserError("跳转地址不是合法网址");
+  }
+  if (!u.host) throw new UserError("请填写完整的网址，例如 example.com 或 https://example.com/path");
+  return u.href;
+}
+
+// 生成自动跳转页面：meta 刷新 + JS replace 双重保障 + 手动兜底链接
+function redirectPage(url) {
+  const host = new URL(url).host;
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正在跳转…</title>
+<meta http-equiv="refresh" content="0; url=${encodeURI(url)}">
+<link rel="icon" href="data:,">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f8f9fc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;color:#1e293b;padding:1rem}
+.card{background:#fff;padding:2rem 2.5rem;border-radius:2rem;box-shadow:0 15px 35px -10px rgba(0,0,0,.1);text-align:center;max-width:90vw;border:1px solid #e9eef3}
+.icon{font-size:2.4rem}
+h2{font-weight:600;font-size:1.4rem;color:#0f172a;margin:10px 0 8px;word-break:break-all}
+p{color:#475569;margin:0 0 1.25rem;font-size:1rem}
+a{color:#2563eb;text-decoration:none;font-weight:500;background:#eff6ff;padding:.6rem 1.2rem;border-radius:2rem;display:inline-block;border:1px solid #bfdbfe}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon" aria-hidden="true">🚀</div>
+  <h2>正在跳转到 ${escapeHtml(host)}</h2>
+  <p>页面将自动重定向，如果长时间没有反应请点击下方链接。</p>
+  <a href="${escapeHtml(url)}" rel="noopener noreferrer">前往 ${escapeHtml(host)} →</a>
+</div>
+<script>
+window.location.replace("${jsString(url)}");
+</script>
+</body>
+</html>`;
+}
+
 async function handleUpload(request, env) {
   const ct = request.headers.get("content-type") || "";
-  let name, file, htmlText, expiry = DEFAULT_EXPIRY;
+  let name, file, htmlText, expiry = DEFAULT_EXPIRY, redirect = "";
 
   if (ct.includes("multipart/form-data")) {
     const fd = await request.formData();
     name = fd.get("name");
     expiry = fd.get("expiry") || DEFAULT_EXPIRY;
+    redirect = fd.get("redirect") || "";
     const f = fd.get("file");
     if (f && typeof f === "object" && typeof f.arrayBuffer === "function") file = f;
     else htmlText = fd.get("html");
@@ -821,6 +888,7 @@ async function handleUpload(request, env) {
     name = body.name;
     htmlText = body.html;
     expiry = body.expiry || DEFAULT_EXPIRY;
+    redirect = body.redirect || "";
   } else {
     throw new UserError("不支持的请求类型，请使用 multipart/form-data 或 application/json", 415);
   }
@@ -840,9 +908,13 @@ async function handleUpload(request, env) {
   // ---- 全局闸门：管理员开关 + 仓库容量 ----
   await checkUploadGate(env);
 
-  // ---- 解析出待写入文件（始终保证根上有 index.html） ----
+  // ---- 解析出待写入文件（始终保证根上有 index.html）；设置了跳转网址时忽略上传内容，生成为跳转页 ----
   let files; // [{path, bytes}]
-  if (file) {
+  let redirectTarget = null; // 规范化后的跳转网址
+  if (redirect && String(redirect).trim()) {
+    redirectTarget = normalizeRedirect(redirect);
+    files = [{ path: "index.html", bytes: new TextEncoder().encode(redirectPage(redirectTarget)) }];
+  } else if (file) {
     const fname = (file.name || "").toLowerCase();
     const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
     const isZip = fname.endsWith(".zip") || (head[0] === 0x50 && head[1] === 0x4b && head[2] === 3 && head[3] === 4);
@@ -888,6 +960,7 @@ async function handleUpload(request, env) {
     created_at: now,
     expire_at: now + EXPIRY_DAYS[expiry] * 86400000,
     ...(ip ? { uploader_ip: ip } : {}),
+    ...(redirectTarget ? { redirect: redirectTarget } : {}),
   });
   const entries = files.map((f) => ({ repoPath: `sites/${name}/${f.path}`, bytes: f.bytes }));
   entries.push({ repoPath: `sites/${name}/${META_FILE}`, bytes: new TextEncoder().encode(meta) });
@@ -896,7 +969,14 @@ async function handleUpload(request, env) {
   // ---- 配额记账（发布成功后才累计本次体积） ----
   if (ip) await consumeIpQuota(env, ip, total);
 
-  return json({ ok: true, name, url: `/${name}/`, files: files.length, expiry_days: EXPIRY_DAYS[expiry] });
+  return json({
+    ok: true,
+    name,
+    url: `/${name}/`,
+    files: files.length,
+    expiry_days: EXPIRY_DAYS[expiry],
+    ...(redirectTarget ? { redirect: redirectTarget } : {}),
+  });
 }
 
 // ---------- 管理端 API ----------
