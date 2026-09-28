@@ -19,6 +19,7 @@
 - 站点静态服务：`/{项目名}/` 渲染 `index.html`，其余文件按原路径回源，子目录自动回退 `index.html`
 - **管理后台**（`/admin`）：输入环境变量 `ADMIN_PASSWORD` 密码登录后可查看全部站点（含上传者 IP）、一键续期或删除站点、将恶意 IP 加入黑名单（被拉黑 IP 无法再发布）、**全局上传开关**（一键暂停/恢复所有新发布，并实时显示仓库体积使用情况）
 - **单 IP 上传配额**：每个 IP 每天最多上传 20MB、每周最多 50MB（UTC 日/周窗口，按 Cloudflare 连接 IP 统计，超限返回 429）
+- **站点数据接口（可选，简单数据库）**：绑定 KV 后，托管站点可用 `/{项目名}/api/db/*` 读写 JSON 数据（读公开、写需发布时下发的写密钥），实现点赞数、评论、配置、表单收集等「简单后端」需求，无需自建服务
 - **仓库容量上限**：存储仓库体积达到 800MB 时自动停止上传（返回 503），管理员可在后台看到当前体积与上限
 - 安全：项目名白名单正则、URL/ZIP 双重路径穿越防护、`X-Content-Type-Options: nosniff`、管理 API 统一密码鉴权
 
@@ -79,6 +80,78 @@ npx wrangler deploy
 | 有效期 | 3 天 / 7 天 / 1 个月（默认 7 天），过期返回 410 并自动清理，名称可复用 |
 | 名称冲突 | 409 拒绝；已过期或手动删除远端 `sites/{项目名}/` 目录后可复用 |
 
+## 站点数据接口（可选：给站点加一个"简单数据库"）
+
+托管的是纯静态页面，本身跑不了后端。绑定 Cloudflare **KV** 后，本项目会为每个站点提供一组 `/{项目名}/api/db/*` 接口：站点里的 JS 用 `fetch` 就能读写 JSON 数据，无需自己搭服务。**读公开、写需密钥**，数据按站点名隔离。
+
+### 启用（一次性配置）
+
+```bash
+npx wrangler kv namespace create SITE_KV   # 记下命令返回的 id
+```
+
+把 id 填入 [wrangler.toml](wrangler.toml) 中已注释好的 `[[kv_namespaces]]` 段并取消注释，然后重新部署：
+
+```bash
+npx wrangler deploy
+```
+
+> 未绑定 KV 时功能自动禁用（数据接口返回 503），不影响原有上传/访问。
+
+### 使用
+
+发布任意站点时，成功响应里会多出两个字段：
+
+```json
+{ "ok": true, "name": "my-site", "url": "/my-site/", "db_key": "sk_1a2b…", "db_base": "/my-site/api/db" }
+```
+
+`db_key` 就是该站点的**写密钥**（控制台发布成功后会直接显示，请保存好；遗失可用管理员密码从后台接口找回，见下）。接口约定：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/{项目名}/api/db?prefix=&limit=&cursor=` | 列出数据 key（仅 key 名，公开） |
+| `GET` | `/{项目名}/api/db/{key}` | 读取一条数据，返回 `{ok,key,value}`（公开） |
+| `PUT`/`POST` | `/{项目名}/api/db/{key}` | 写入一条数据（请求体为 JSON），需请求头 `X-Site-Key` |
+| `DELETE` | `/{项目名}/api/db/{key}` | 删除一条数据，需请求头 `X-Site-Key` |
+
+约定与限制：`key` 仅允许字母、数字、`.` `_` `-`，1–128 位；单条数值 ≤ 64KB；站点过期或被删除后数据自动清空；写密钥错误或缺失返回 401。
+
+站点页面内使用（同源，无需处理 CORS）：
+
+```html
+<script>
+  const KEY = 'sk_你的写密钥';
+  // 写（需密钥）
+  await fetch('/my-site/api/db/likes', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Site-Key': KEY },
+    body: JSON.stringify({ count: 3 })
+  });
+  // 读（公开）
+  const r = await fetch('/my-site/api/db/likes');
+  console.log((await r.json()).value); // { count: 3 }
+</script>
+```
+
+命令行示例：
+
+```bash
+curl -X PUT -H 'Content-Type: application/json' -H 'X-Site-Key: sk_xxx' \
+     -d '{"count":3}' https://<worker域名>/my-site/api/db/likes
+curl https://<worker域名>/my-site/api/db/likes
+curl https://<worker域名>/my-site/api/db            # 列出全部 key
+```
+
+管理员找回写密钥（需 `X-Admin-Token`）：
+
+```bash
+curl -H 'X-Admin-Token: <ADMIN_PASSWORD>' https://<worker域名>/api/admin/sites
+# 返回的每个站点含 db_key 字段（未启用则为 null）
+```
+
+> 注意：接口路径 `/{项目名}/api/db/*` 由数据接口占用，站点内不要放同名目录。
+
 ## API
 
 | 方法 | 路径 | 说明 |
@@ -90,7 +163,11 @@ npx wrangler deploy
 | `GET` | `/api/sites/check?name=x` | 名字占用即时校验 `{ok, taken, warning?}`。只返回占用布尔，不泄露任何站点列表/元数据（已过期名字视为可复用） |
 | `GET` | `/api/health` | 配置自检 `{configured, missing, token_valid}` |
 | `POST` | `/api/upload` | 部署（见下） |
-| `GET` | `/api/admin/sites` | 管理：全部站点（含 `uploader_ip`），需 `X-Admin-Token` |
+| `GET` | `/{项目名}/api/db` | 数据接口：列出数据 key（公开） |
+| `GET` | `/{项目名}/api/db/{key}` | 数据接口：读取一条（公开） |
+| `PUT`/`POST` | `/{项目名}/api/db/{key}` | 数据接口：写入 `{...}`，需 `X-Site-Key` |
+| `DELETE` | `/{项目名}/api/db/{key}` | 数据接口：删除，需 `X-Site-Key` |
+| `GET` | `/api/admin/sites` | 管理：全部站点（含 `uploader_ip`、`db_key`），需 `X-Admin-Token` |
 | `DELETE` | `/api/admin/sites/{项目名}` | 管理：删除站点 |
 | `POST` | `/api/admin/sites/{项目名}/renew` | 管理：续期 `{days: 1-365}` |
 | `GET` | `/api/admin/blacklist` | 管理：读取 IP 黑名单 |
@@ -120,7 +197,7 @@ curl -H 'Content-Type: application/json' \
 ```bash
 cp .dev.vars.example .dev.vars   # 填入本地测试用的 GitHub 配置
 npx wrangler dev                 # http://localhost:8787
-npm test                         # 72 项全链路测试（mock GitHub，零依赖，需系统 python3）
+npm test                         # 90 项全链路测试（mock GitHub/KV，零依赖，需系统 python3）
 ```
 
 ## 注意事项
@@ -134,13 +211,14 @@ npm test                         # 72 项全链路测试（mock GitHub，零依�
 - 若部署中途失败（如限流），部分文件可能已写入仓库，可删除远端 `sites/{项目名}/` 目录后重试
 - 回源内容在 Cloudflare 边缘缓存 5 分钟，更新站点后最多延迟 5 分钟生效
 - 控制台无鉴权，任何知道域名的人都可部署；管理后台 `/admin` 由 `ADMIN_PASSWORD` 保护。如需进一步限制访问，请在 Cloudflare 侧启用 Access 等防护
+- **站点数据接口（KV）**：数据存于 Cloudflare KV，键为 `site:{项目名}:{key}`（写密钥存于 `__auth:{项目名}`，不会被数据列表返回）；站点存在性与有效期以 KV 记录为准，热路径不访问 GitHub；站点删除/过期清理时一并清空其数据。读操作公开，故**不要往这里存隐私数据**（任何知道项目名的人都能读）；免费额度为 10 万次读/天、1000 次写/天，超限受 KV 侧限制
 
 ## 项目结构
 
 ```
-src/index.js   Worker：路由 / 校验 / 零依赖 ZIP 解析 / GitHub API / 有效期管理 / 静态回源 / 管理端 API / IP 黑名单 / 上传配额 / 仓库容量闸门 / 全局上传开关
+src/index.js   Worker：路由 / 校验 / 零依赖 ZIP 解析 / GitHub API / 有效期管理 / 静态回源 / 管理端 API / IP 黑名单 / 上传配额 / 仓库容量闸门 / 全局上传开关 / 站点数据接口（KV）
 src/ui.js      图形化控制台页面（内嵌 HTML）
 src/admin.js   管理后台页面（内嵌 HTML）
-test/          全链路测试（mock GitHub REST API）
-wrangler.toml  Cloudflare Workers 配置与环境变量
+test/          全链路测试（mock GitHub REST API 与 KV）
+wrangler.toml  Cloudflare Workers 配置与环境变量（含可选 KV 绑定）
 ```

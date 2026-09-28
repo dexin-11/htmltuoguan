@@ -1017,5 +1017,118 @@ await test("站点与控制台响应带隐私安全头（noindex 等）", async 
   assert.equal(api.headers.get("x-robots-tag"), "noindex, noarchive, nofollow");
 });
 
+// ── 站点数据接口（KV）──
+function makeKv() {
+  const m = new Map();
+  return {
+    async get(k) { return m.has(k) ? m.get(k) : null; },
+    async put(k, v) { m.set(k, String(v)); },
+    async delete(k) { m.delete(k); },
+    async list({ prefix = "", cursor } = {}) {
+      assert.equal(cursor, undefined, "mock KV 不分页");
+      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).sort().map((name) => ({ name }));
+      return { keys, list_complete: true, cursor: undefined };
+    },
+  };
+}
+const kvStore = makeKv();
+const KV_ENV = { ...ENV, SITE_KV: kvStore };
+const ADMIN_KV_ENV = { ...KV_ENV, ADMIN_PASSWORD: "s3cret" };
+let DBKEY = null;
+
+await test("未绑定 KV 时数据接口 → 503", async () => {
+  const r = await worker.fetch(req("/z1x/api/db"), ENV);
+  assert.equal(r.status, 503);
+  assert.ok((await r.json()).error.includes("SITE_KV"));
+});
+
+await test("部署时下发写密钥并写入 KV 认证记录", async () => {
+  const j = await (await worker.fetch(req("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "dbsite", html: "<h1>db</h1>" }),
+  }), KV_ENV)).json();
+  assert.equal(j.ok, true);
+  assert.ok(j.db_key && j.db_key.startsWith("sk_"), "应下发写密钥");
+  assert.equal(j.db_base, "/dbsite/api/db");
+  DBKEY = j.db_key;
+  const auth = JSON.parse(await kvStore.get("__auth:dbsite"));
+  assert.equal(auth.write_key, DBKEY);
+  assert.ok(auth.expire_at > Date.now());
+});
+
+await test("数据接口：无密钥 / 错误密钥写入 → 401", async () => {
+  const mk = (h) => worker.fetch(req("/dbsite/api/db/count", {
+    method: "PUT", headers: { "Content-Type": "application/json", ...h }, body: JSON.stringify({ n: 1 }),
+  }), KV_ENV);
+  assert.equal((await mk({})).status, 401);
+  assert.equal((await mk({ "X-Site-Key": "sk_wrong" })).status, 401);
+});
+
+await test("数据接口：带密钥写入后公开可读", async () => {
+  const r = await worker.fetch(req("/dbsite/api/db/count", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Site-Key": DBKEY },
+    body: JSON.stringify({ n: 42, tags: ["a"] }),
+  }), KV_ENV);
+  assert.equal(r.status, 200);
+  const g = await (await worker.fetch(req("/dbsite/api/db/count"), KV_ENV)).json();
+  assert.equal(g.ok, true);
+  assert.deepEqual(g.value, { n: 42, tags: ["a"] });
+});
+
+await test("数据接口：列表 / 前缀过滤 / 删除", async () => {
+  await worker.fetch(req("/dbsite/api/db/user.1", {
+    method: "PUT", headers: { "Content-Type": "application/json", "X-Site-Key": DBKEY }, body: '{"a":1}',
+  }), KV_ENV);
+  const list = await (await worker.fetch(req("/dbsite/api/db"), KV_ENV)).json();
+  assert.ok(list.keys.includes("count") && list.keys.includes("user.1"));
+  const pref = await (await worker.fetch(req("/dbsite/api/db?prefix=user."), KV_ENV)).json();
+  assert.deepEqual(pref.keys, ["user.1"]);
+
+  const d = await worker.fetch(req("/dbsite/api/db/count", { method: "DELETE", headers: { "X-Site-Key": DBKEY } }), KV_ENV);
+  assert.equal(d.status, 200);
+  assert.equal((await worker.fetch(req("/dbsite/api/db/count"), KV_ENV)).status, 404);
+  // 删除也需要密钥
+  assert.equal((await worker.fetch(req("/dbsite/api/db/user.1", { method: "DELETE" }), KV_ENV)).status, 401);
+});
+
+await test("数据接口：非法 key / 非法 JSON / 超大值 / 方法不允许 → 400/413/405", async () => {
+  const put = (p, body) => worker.fetch(req(p, {
+    method: "PUT", headers: { "Content-Type": "application/json", "X-Site-Key": DBKEY }, body,
+  }), KV_ENV);
+  assert.equal((await put("/dbsite/api/db/a%2Fb", "{}")).status, 400); // 多级路径
+  assert.equal((await put("/dbsite/api/db/x", "not-json")).status, 400);
+  assert.equal((await put("/dbsite/api/db/big", JSON.stringify({ s: "x".repeat(70000) }))).status, 413);
+  assert.equal((await worker.fetch(req("/dbsite/api/db/x", { method: "PATCH" }), KV_ENV)).status, 405);
+});
+
+await test("数据接口：不存在的站点 → 404；已过期站点 → 410", async () => {
+  assert.equal((await worker.fetch(req("/nosuchsite/api/db/a"), KV_ENV)).status, 404);
+  await kvStore.put("__auth:olddb", JSON.stringify({ v: 1, write_key: "sk_x", expire_at: Date.now() - 1 }));
+  assert.equal((await worker.fetch(req("/olddb/api/db/a"), KV_ENV)).status, 410);
+});
+
+await test("管理列表包含站点写密钥（便于找回）", async () => {
+  const j = await (await worker.fetch(req("/api/admin/sites", { headers: AUTH }), ADMIN_KV_ENV)).json();
+  const s = j.sites.find((x) => x.name === "dbsite");
+  assert.equal(s.db_key, DBKEY);
+});
+
+await test("删除站点时一并清空其数据与写密钥", async () => {
+  const j = await (await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "dbsite2", html: "<h1>2</h1>" }),
+  }), KV_ENV)).json();
+  await worker.fetch(req("/dbsite2/api/db/k", {
+    method: "PUT", headers: { "Content-Type": "application/json", "X-Site-Key": j.db_key }, body: '{"v":1}',
+  }), KV_ENV);
+  assert.ok(await kvStore.get("site:dbsite2:k"));
+  const d = await (await worker.fetch(req("/api/admin/sites/dbsite2", { method: "DELETE", headers: AUTH }), ADMIN_KV_ENV)).json();
+  assert.equal(d.ok, true);
+  assert.equal(await kvStore.get("site:dbsite2:k"), null);
+  assert.equal(await kvStore.get("__auth:dbsite2"), null);
+});
+
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败\n`);
 process.exit(failed ? 1 : 0);

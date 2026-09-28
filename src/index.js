@@ -20,6 +20,10 @@ const SETTINGS_FILE = ".bay-settings.json"; // 全局上传开关（仓库根目
 const DAY_BYTES = 20 * 1024 * 1024; // 单 IP 每日上传上限 20MB
 const WEEK_BYTES = 50 * 1024 * 1024; // 单 IP 每周上传上限 50MB
 const MAX_REPO_BYTES = 800 * 1024 * 1024; // 仓库容量上限 800MB，达到后停止上传
+const DB_KEY_RE = /^[A-Za-z0-9._-]{1,128}$/; // 站点数据接口的 key 白名单
+const DB_MAX_VALUE_BYTES = 64 * 1024; // 站点数据接口单值上限 64KB
+const DB_AUTH_KEY = (name) => `__auth:${name}`; // 写密钥记录（独立前缀，不会被数据列表返回）
+const DB_DATA_PREFIX = (name) => `site:${name}:`; // 站点数据 key 前缀（按站点名隔离）
 // git 空树对象的固定 SHA：GitHub 的创建树接口不接受 {"tree": []}（422 Invalid tree info），
 // 但始终接受该固定 SHA 作为目录条目引用，用它覆盖目录即等效清空该目录全部文件
 const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -371,6 +375,7 @@ const isExpired = (meta, now = Date.now()) => !!meta && meta.expire_at <= now;
 // 删除站点全部文件（含元数据）：把 sites/{name} 子树置空后一次提交，速度快且不受文件数影响
 async function deleteSite(env, name, blobs) {
   await deleteTree(env, `sites/${name}`, `cleanup(html-hosting): 过期删除 ${name}`);
+  await purgeSiteData(env, name); // 一并清空该站点的数据接口数据与写密钥
 }
 
 // 轻量探测站点目录是否存在（非递归、单次请求）。删除时用它替代整仓库递归树扫描：
@@ -706,6 +711,146 @@ async function consumeIpQuota(env, ip, bytes) {
   }
 }
 
+// ---------- 站点数据接口（Cloudflare KV） ----------
+// 让纯静态站点也能有一个"简单数据库"：站点前端 fetch 调用 /{项目名}/api/db/*，
+// 数据存在 Cloudflare KV（按站点名前缀隔离）。读公开、写需上传时下发的写密钥 X-Site-Key。
+// 站点存在性/有效期由 KV 中的 __auth 记录判定，热路径不访问 GitHub。
+function siteKv(env) {
+  const ns = env.SITE_KV;
+  if (!ns || typeof ns.get !== "function") {
+    throw new UserError(
+      "站点数据接口未启用：请在 wrangler.toml 绑定名为 SITE_KV 的 KV 命名空间（npx wrangler kv namespace create SITE_KV）",
+      503
+    );
+  }
+  return ns;
+}
+
+function newWriteKey() {
+  const a = crypto.getRandomValues(new Uint8Array(18));
+  return "sk_" + [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function readSiteAuth(env, name) {
+  try {
+    const raw = await env.SITE_KV.get(DB_AUTH_KEY(name));
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    return j && typeof j === "object" ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+// 部署成功后写入写密钥记录；KV 未绑定时静默跳过（不影响发布）
+async function saveSiteAuth(env, name, writeKey, expireAt) {
+  if (!env.SITE_KV || typeof env.SITE_KV.put !== "function") return false;
+  try {
+    await env.SITE_KV.put(DB_AUTH_KEY(name), JSON.stringify({ v: 1, write_key: writeKey, expire_at: expireAt }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 续期后同步 KV 中的过期时间，保证数据接口与站点有效期一致
+async function syncSiteAuthExpiry(env, name, expireAt) {
+  if (!env.SITE_KV || typeof env.SITE_KV.put !== "function") return;
+  try {
+    const auth = await readSiteAuth(env, name);
+    if (auth) await env.SITE_KV.put(DB_AUTH_KEY(name), JSON.stringify({ ...auth, expire_at: expireAt }));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+// 站点被删除 / 过期清理时，清空其数据与写密钥
+async function purgeSiteData(env, name) {
+  const ns = env.SITE_KV;
+  if (!ns || typeof ns.list !== "function") return;
+  try {
+    let cursor;
+    do {
+      const res = await ns.list({ prefix: DB_DATA_PREFIX(name), cursor });
+      for (const k of res.keys) await ns.delete(k.name);
+      cursor = res.list_complete ? null : res.cursor;
+    } while (cursor);
+    await ns.delete(DB_AUTH_KEY(name));
+  } catch {
+    /* 忽略 */
+  }
+}
+
+// 处理 /{项目名}/api/db/*：列表 / 读取 / 写入 / 删除
+async function handleSiteDb(request, env, name, rest, method, url) {
+  const ns = siteKv(env);
+  const auth = await readSiteAuth(env, name);
+  if (!auth) throw new UserError("站点不存在或未启用数据接口（请重新部署该站点以启用）", 404);
+  if (auth.expire_at && auth.expire_at <= Date.now()) throw new UserError("站点已过期，数据接口不可用", 410);
+
+  const prefix = DB_DATA_PREFIX(name);
+  const requireKey = () => {
+    const given = request.headers.get("x-site-key") || "";
+    if (!auth.write_key || given !== auth.write_key) throw new UserError("写密钥错误或缺少 X-Site-Key 请求头", 401);
+  };
+
+  // 列表：GET /{项目名}/api/db?prefix=&limit=&cursor=
+  if (!rest.length) {
+    if (method !== "GET" && method !== "HEAD") throw new UserError("方法不允许", 405);
+    const p = (url.searchParams.get("prefix") || "").trim();
+    if (p && !DB_KEY_RE.test(p)) throw new UserError("prefix 格式不正确", 400);
+    let limit = Number(url.searchParams.get("limit"));
+    if (!Number.isInteger(limit) || limit < 1) limit = 1000;
+    limit = Math.min(limit, 1000);
+    const res = await ns.list({ prefix: prefix + p, limit, cursor: url.searchParams.get("cursor") || undefined });
+    return json({
+      ok: true,
+      keys: res.keys.map((k) => k.name.slice(prefix.length)),
+      list_complete: !!res.list_complete,
+      cursor: res.list_complete ? null : res.cursor || null,
+    });
+  }
+
+  if (rest.length > 1) throw new UserError("数据 key 不合法（不支持多级路径）", 400);
+  const key = rest[0];
+  if (!DB_KEY_RE.test(key)) throw new UserError("数据 key 只能包含字母、数字、点、下划线、连字符（1-128 位）", 400);
+  const full = prefix + key;
+
+  if (method === "GET" || method === "HEAD") {
+    const raw = await ns.get(full);
+    if (raw === null) return json({ ok: false, error: "数据不存在" }, 404);
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      value = raw;
+    }
+    return json({ ok: true, key, value });
+  }
+  if (method === "PUT" || method === "POST") {
+    requireKey();
+    const text = await request.text();
+    if (!text.trim()) throw new UserError("请求体不能为空，需为合法 JSON", 400);
+    if (new TextEncoder().encode(text).length > DB_MAX_VALUE_BYTES) throw new UserError("单个数据值不能超过 64KB", 413);
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new UserError("请求体不是合法的 JSON", 400);
+    }
+    await ns.put(full, JSON.stringify(parsed));
+    return json({ ok: true, key });
+  }
+  if (method === "DELETE") {
+    requireKey();
+    const raw = await ns.get(full);
+    if (raw === null) return json({ ok: false, error: "数据不存在" }, 404);
+    await ns.delete(full);
+    return json({ ok: true, key });
+  }
+  throw new UserError("方法不允许", 405);
+}
+
 // 管理端鉴权
 function adminCheck(env, request) {
   const pwd = env.ADMIN_PASSWORD;
@@ -955,10 +1100,11 @@ async function handleUpload(request, env) {
 
   // ---- 批量写入全部文件与有效期元数据（单次提交，避免逐文件回源触发子请求上限） ----
   const now = Date.now();
+  const expireAt = now + EXPIRY_DAYS[expiry] * 86400000;
   const meta = JSON.stringify({
     v: 1,
     created_at: now,
-    expire_at: now + EXPIRY_DAYS[expiry] * 86400000,
+    expire_at: expireAt,
     ...(ip ? { uploader_ip: ip } : {}),
     ...(redirectTarget ? { redirect: redirectTarget } : {}),
   });
@@ -969,6 +1115,10 @@ async function handleUpload(request, env) {
   // ---- 配额记账（发布成功后才累计本次体积） ----
   if (ip) await consumeIpQuota(env, ip, total);
 
+  // ---- 启用站点数据接口：生成写密钥（KV 未绑定则跳过，不影响发布） ----
+  const dbKey = newWriteKey();
+  const dbEnabled = await saveSiteAuth(env, name, dbKey, expireAt);
+
   return json({
     ok: true,
     name,
@@ -976,6 +1126,7 @@ async function handleUpload(request, env) {
     files: files.length,
     expiry_days: EXPIRY_DAYS[expiry],
     ...(redirectTarget ? { redirect: redirectTarget } : {}),
+    ...(dbEnabled ? { db_key: dbKey, db_base: `/${name}/api/db` } : {}),
   });
 }
 
@@ -990,12 +1141,14 @@ async function handleAdminSites(env, request) {
   const rows = await Promise.all(
     [...sites.values()].map(async (s) => {
       const meta = await getMeta(env, s.name);
+      const auth = await readSiteAuth(env, s.name);
       return {
         name: s.name,
         files: s.files,
         size: s.size,
         expire_at: meta ? meta.expire_at : null,
         uploader_ip: meta && meta.uploader_ip ? meta.uploader_ip : null,
+        db_key: auth && auth.write_key ? auth.write_key : null,
       };
     })
   );
@@ -1034,6 +1187,7 @@ async function handleAdminRenew(env, request, name) {
   const base = meta ? Math.max(meta.expire_at, now) : now;
   const next = { ...(meta || {}), v: 1, expire_at: base + days * 86400000, renewed_at: now };
   await writeRepoFile(env, `sites/${name}/${META_FILE}`, JSON.stringify(next), `admin(html-hosting): ${name} 续期 ${days} 天`, sha || undefined);
+  await syncSiteAuthExpiry(env, name, next.expire_at); // 数据接口有效期与站点保持一致
   return json({ ok: true, name, expire_at: next.expire_at, days });
 }
 
@@ -1234,6 +1388,14 @@ export default {
 
       if (pathname === "/api" || pathname.startsWith("/api/")) {
         return json({ ok: false, error: "未知的 API 路径" }, 404);
+      }
+
+      // ---- 站点数据接口 /{项目名}/api/db/... ----
+      {
+        const segs = safeSegments(pathname);
+        if (segs && segs.length >= 3 && segs[1] === "api" && segs[2] === "db" && NAME_RE.test(segs[0]) && !RESERVED.has(segs[0])) {
+          return await handleSiteDb(request, env, segs[0], segs.slice(3), method, url);
+        }
       }
 
       // ---- 站点静态服务 /{项目名}/... ----

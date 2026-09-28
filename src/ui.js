@@ -482,6 +482,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         </span>
         <p class="result-title">发布成功！</p>
         <p class="result-sub" id="result-sub">网页已经上线，把这个链接分享给任何人吧。</p>
+        <p class="result-sub" id="result-key" style="display:none"></p>
         <a class="result-url" id="result-link" target="_blank" rel="noopener"></a>
         <div class="result-actions">
           <button class="pill-btn primary" id="copy-btn" type="button">
@@ -827,6 +828,13 @@ function onResult(j){
     $('result-sub').textContent = j.redirect
       ? '链接跳转已生效，访问者会自动跳转到 ' + j.redirect
       : '网页已上线，有效期 ' + (j.expiry_days || 7) + ' 天，把链接分享给任何人吧。';
+    var keyEl = $('result-key');
+    if(j.db_key){
+      keyEl.textContent = '数据接口写密钥（请务必保存，遗失可在管理后台找回）：' + j.db_key;
+      keyEl.style.display = '';
+    } else {
+      keyEl.style.display = 'none';
+    }
     $('result').classList.remove('hidden');
     if(takenNames.indexOf(j.name) < 0) takenNames.push(j.name);
     rememberUploaded(j.name);

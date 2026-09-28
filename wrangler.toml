@@ -17,6 +17,15 @@ GH_REPO = "htmltuoguan"
 # 可选：GH_BRANCH（默认 main，代码里已兜底，无需配置）
 # GH_API（自建 GitHub Enterprise 的 API 地址，默认 https://api.github.com）
 
+# ── 站点数据接口（KV，可选）─────────────────────────────────
+# 绑定后，托管站点即可用 /{项目名}/api/db/* 读写简单数据（详见 README「站点数据接口」）。
+# 启用步骤：先创建命名空间，再把返回的 id 填到下面并取消注释：
+#   npx wrangler kv namespace create SITE_KV
+#
+# [[kv_namespaces]]
+# binding = "SITE_KV"
+# id = "把上一步返回的 id 填在这里"
+
 # 密钥（敏感信息，绝对不要写入仓库）：
 #   npx wrangler secret put GH_TOKEN        # GitHub Token，需 repo（或 contents）读写权限
 #   npx wrangler secret put ADMIN_PASSWORD  # 管理后台 /admin 的登录密码
