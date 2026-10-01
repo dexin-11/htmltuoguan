@@ -20,3 +20,15 @@ GH_REPO = "htmltuoguan"
 # 密钥（敏感信息，绝对不要写入仓库）：
 #   npx wrangler secret put GH_TOKEN        # GitHub Token，需 repo（或 contents）读写权限
 #   npx wrangler secret put ADMIN_PASSWORD  # 管理后台 /admin 的登录密码
+
+# ── 站点后端（可选 · 声明式 KV 存储）────────────────────────
+# 开启后每个站点自动拥有 POST/GET /{项目名}/api/submit 数据接口，
+# 并支持页面内嵌 bay-config 自定义路由；/ai 为 AI 生成页面的规则指南页。
+# 开启步骤：
+#   1) npx wrangler kv namespace create BAYKV
+#   2) 把输出的 id 填到下面，并取消两行注释
+# 不开启时：静态托管完全不受影响，后端接口返回 503 提示未配置。
+#
+# [[kv_namespaces]]
+# binding = "BAYKV"
+# id = "00000000000000000000000000000000"   # ← 替换为第 1 步输出的 id

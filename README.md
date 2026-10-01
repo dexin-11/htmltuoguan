@@ -79,6 +79,47 @@ npx wrangler deploy
 | 有效期 | 3 天 / 7 天 / 1 个月（默认 7 天），过期返回 410 并自动清理，名称可复用 |
 | 名称冲突 | 409 拒绝；已过期或手动删除远端 `sites/{项目名}/` 目录后可复用 |
 
+## 站点后端（可选 · 声明式 KV）
+
+开启后，每个托管站点自动获得一个轻量数据接口，小白无需写任何配置即可让 AI 生成的页面"能存数据"（留言板 / 表单 / 投票）。引擎只访问 KV、只执行白名单声明操作，**不执行用户代码**，且与 `GH_TOKEN` / `ADMIN_PASSWORD` 完全隔离。
+
+**开启步骤**：
+
+```
+npx wrangler kv namespace create BAYKV   # 1. 创建 KV 命名空间
+# 2. 把输出的 id 填入 wrangler.toml 末尾，并取消 [[kv_namespaces]] 三行注释
+npx wrangler deploy                       # 3. 重新部署
+```
+
+不绑定时静态托管完全不受影响，后端接口返回 503 提示未配置。
+
+**默认接口（每个站点自动拥有，零配置）**：
+
+| 请求 | 行为 |
+|---|---|
+| `POST /{项目名}/api/submit` | body 为 JSON（或表单编码），整条存储并返回 `{ok:true,id}` |
+| `GET /{项目名}/api/submit` | 返回最近 50 条记录的 JSON 数组（时间倒序） |
+| 限流 | 每 IP 每站点每小时 60 次（429）；请求体 ≤ 256KB（413） |
+
+**小白用法（两种任选）**——让网页版 AI 生成带后端的页面：
+
+1. **网址法**：把 `https://<worker域名>/ai` 发给 AI："按这个网址的规则做一个留言板，输出单个 index.html"。`/ai` 是平台托管的规则页，写明输出格式、接口约定、存储限制，以及**必须自查的 bug**（320px 窄屏不溢出、长文本换行、渲染用户内容防 XSS、加载/错误/空态、控制台零报错等）。
+2. **提示词法**：控制台"可选进阶"卡片里的一键复制提示词（AI 读不了网址时用）。
+
+**进阶 `bay-config`（可选）**：在页面 `<head>` 内嵌声明即可自定义路由（校验、多集合、键值、口令门禁、限流等白名单操作）：
+
+```html
+<script type="application/json" id="bay-config">
+{"routes":[{"path":"api/msg","method":"POST","ops":[
+  {"op":"readBody"},
+  {"op":"validate","rules":{"name":"required|max:40","text":"required|max:500"}},
+  {"op":"append","collection":"msgs","item":{"name":"{{body.name}}","text":"{{body.text}}","ts":"{{now}}"}},
+  {"op":"returnJson","body":{"ok":true}}]}]}
+</script>
+```
+
+上传时自动抽取并校验（非法 JSON / 未知操作会拒绝发布并提示原因）；删除或过期站点时其后端数据一并清除。支持的操作：`readBody / readQuery / readHeader / validate / append / list / del / kvGet / kvPut / checkToken / rateLimit / setStatus / returnJson / returnText / redirect`（模板语法 `{{body.x}} {{query.x}} {{vars.x}} {{now}} {{site}}`）。
+
 ## API
 
 | 方法 | 路径 | 说明 |

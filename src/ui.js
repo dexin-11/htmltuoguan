@@ -335,6 +335,17 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
   .card{padding:26px 22px 24px}
   .nav-right .nav-status span{display:none}
 }
+/* ── AI 生成带后端网页的可选提示 ─────────── */
+.ai-tip{background:var(--blue-soft);border:1px solid rgba(0,113,227,.18);border-radius:var(--r-md);padding:14px 16px;margin:-10px 0 26px;font-size:14px}
+.ai-tip summary{cursor:pointer;font-weight:600;color:var(--blue-deep);list-style:none;display:flex;align-items:center;gap:8px}
+.ai-tip summary::-webkit-details-marker{display:none}
+.ai-tip summary::before{content:'+';width:18px;height:18px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:14px;flex:none;line-height:1}
+.ai-tip[open] summary::before{content:'−'}
+.ai-tip .block-help{margin:12px 0}
+.ai-row{display:flex;align-items:center;gap:10px;margin:10px 0}
+.ai-text{flex:1;min-width:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ai-copy{flex:none}
+.ai-copy span{font-size:13px}
 </style>
 </head>
 <body>
@@ -464,6 +475,21 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         </div>
         <p class="block-help">到期后网页会自动下线并清空文件，名字也会释放给别人使用。发布后随时可以重新上传。</p>
       </div>
+
+      <!-- 可选：让 AI 生成带后端的网页 -->
+      <details class="ai-tip">
+        <summary>想要留言板 / 表单能真的存数据？（可选进阶）</summary>
+        <p class="block-help">每个发布的网页都自动带一个数据接口。用网页版 AI（ChatGPT、豆包、Claude 等）生成页面时，把下面任意一份内容一并发给它，它就会按平台规则生成能存数据的页面：</p>
+        <div class="ai-row">
+          <code class="ai-text" id="ai-url-text">/ai</code>
+          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-url"><span>复制网址</span></button>
+        </div>
+        <div class="ai-row">
+          <code class="ai-text" id="ai-prompt-text">做一个{功能}…（一句话提示词）</code>
+          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-prompt"><span>复制提示词</span></button>
+        </div>
+        <p class="block-help">拿到 AI 生成的 index.html 后，像平常一样上传即可；访客提交的数据保存在平台上，刷新不丢失（站点到期后随站点一起清除）。</p>
+      </details>
 
       <button class="publish-btn" id="publish-btn" type="button">
         <span id="publish-label">发布我的网页</span>
@@ -997,6 +1023,13 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
     });
   };
 }
+
+/* AI 规则网址与提示词（一键复制，供网页版 AI 生成带后端的页面） */
+var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。';
+var aiUrl = location.origin + '/ai';
+$('ai-url-text').textContent = aiUrl;
+$('copy-ai-url').onclick = function(){ copyText(aiUrl, this); };
+$('copy-ai-prompt').onclick = function(){ copyText(AI_PROMPT, this); };
 })();
 </script>
 </body>

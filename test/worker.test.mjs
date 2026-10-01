@@ -1017,5 +1017,207 @@ await test("站点与控制台响应带隐私安全头（noindex 等）", async 
   assert.equal(api.headers.get("x-robots-tag"), "noindex, noarchive, nofollow");
 });
 
+// ── 站点后端（声明式 KV：api/submit 默认接口 + bay-config 自定义路由） ──
+function makeKV() {
+  const m = new Map();
+  return {
+    _map: m,
+    async get(key, opts) {
+      const v = m.get(key);
+      if (v === undefined) return null;
+      if (opts && opts.type === "json") {
+        try { return JSON.parse(v); } catch { return null; }
+      }
+      return v;
+    },
+    async put(key, value /* , opts */) { m.set(key, String(value)); },
+    async delete(key) { m.delete(key); },
+    async list(opts = {}) {
+      const prefix = opts.prefix || "";
+      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).sort().map((name) => ({ name }));
+      return { keys, list_complete: true };
+    },
+  };
+}
+const BAYKV = makeKV();
+const BAY_ENV = { ...ENV, BAYKV };
+
+await test("GET /ai 返回 AI 规则指南页", async () => {
+  const r = await worker.fetch(req("/ai"), ENV);
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").includes("text/html"));
+  const txt = await r.text();
+  assert.ok(txt.includes("api/submit"), "应包含接口约定");
+  assert.ok(txt.includes("320px"), "应包含防溢出自查要求");
+  assert.ok(txt.includes("textContent"), "应包含防 XSS 自查要求");
+  assert.ok(r.headers.get("x-robots-tag"), "应带安全头");
+});
+
+await test("POST /{站点}/api/submit 存数据，GET 返回数组（默认接口零配置）", async () => {
+  const post = await worker.fetch(req("/taken/api/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "张三", text: "你好" }),
+  }), BAY_ENV);
+  assert.equal(post.status, 200);
+  const pj = await post.json();
+  assert.equal(pj.ok, true);
+  assert.ok(pj.id, "应返回记录 id");
+
+  const get = await worker.fetch(req("/taken/api/submit"), BAY_ENV);
+  assert.equal(get.status, 200);
+  const list = await get.json();
+  assert.ok(Array.isArray(list), "GET 应返回裸数组");
+  assert.ok(list.some((r) => r.name === "张三" && r.text === "你好" && r.id === pj.id));
+  assert.ok(list.some((r) => typeof r.ts === "number"), "记录应带 ts 时间戳");
+});
+
+await test("api/submit 支持表单编码提交", async () => {
+  const r = await worker.fetch(req("/taken/api/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "name=" + encodeURIComponent("李四") + "&text=hi",
+  }), BAY_ENV);
+  assert.equal(r.status, 200);
+  const list = await (await worker.fetch(req("/taken/api/submit"), BAY_ENV)).json();
+  assert.ok(list.some((x) => x.name === "李四"));
+});
+
+await test("api/submit 请求体超 256KB → 413", async () => {
+  const r = await worker.fetch(req("/taken/api/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ big: "x".repeat(300 * 1024) }),
+  }), BAY_ENV);
+  assert.equal(r.status, 413);
+});
+
+await test("api/submit 默认限流：同一 IP 第 61 次 → 429", async () => {
+  const up = await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "rlsite", html: "<h1>rl</h1>" }),
+  }), BAY_ENV);
+  assert.equal((await up.json()).backend, "default");
+  const headers = { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.7" };
+  for (let i = 0; i < 60; i++) {
+    const r = await worker.fetch(req("/rlsite/api/submit", { method: "POST", headers, body: '{"n":1}' }), BAY_ENV);
+    if (r.status !== 200) assert.fail("第 " + (i + 1) + " 次应成功，实际 " + r.status);
+  }
+  const r61 = await worker.fetch(req("/rlsite/api/submit", { method: "POST", headers, body: '{"n":1}' }), BAY_ENV);
+  assert.equal(r61.status, 429);
+  // 换 IP 不受影响
+  const other = await worker.fetch(req("/rlsite/api/submit", {
+    method: "POST", headers: { "Content-Type": "application/json", "cf-connecting-ip": "198.51.100.8" }, body: '{"n":1}',
+  }), BAY_ENV);
+  assert.equal(other.status, 200);
+});
+
+await test("上传内嵌 bay-config 的站点：自定义路由生效，默认 api/submit 保留", async () => {
+  const cfg = {
+    version: 1,
+    routes: [
+      { path: "api/msg", method: "POST", ops: [
+        { op: "readBody" },
+        { op: "validate", rules: { name: "required|max:40", text: "required|max:500" } },
+        { op: "append", collection: "msgs", item: { name: "{{body.name}}", text: "{{body.text}}" } },
+        { op: "returnJson", body: { ok: true } },
+      ] },
+      { path: "api/msg", method: "GET", ops: [
+        { op: "list", collection: "msgs", limit: 50, as: "rows" },
+        { op: "returnJson", body: "{{vars.rows}}" },
+      ] },
+    ],
+  };
+  const html = '<!DOCTYPE html><html><head><script type="application/json" id="bay-config">'
+    + JSON.stringify(cfg) + '<\/script></head><body>hi</body></html>';
+  const up = await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "cfgsite", html }),
+  }), BAY_ENV);
+  const uj = await up.json();
+  assert.equal(uj.ok, true);
+  assert.equal(uj.backend, "custom");
+
+  // 校验失败 → 400
+  const bad = await worker.fetch(req("/cfgsite/api/msg", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "", text: "x" }),
+  }), BAY_ENV);
+  assert.equal(bad.status, 400);
+
+  // 正常写入 → 返回 {ok:true}
+  const post = await worker.fetch(req("/cfgsite/api/msg", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "王五", text: "hello" }),
+  }), BAY_ENV);
+  assert.equal(post.status, 200);
+  assert.equal((await post.json()).ok, true);
+
+  // GET 返回数组（{{vars.rows}} 模板直出对象）
+  const rows = await (await worker.fetch(req("/cfgsite/api/msg"), BAY_ENV)).json();
+  assert.ok(Array.isArray(rows));
+  assert.ok(rows.some((r) => r.name === "王五" && r.text === "hello"));
+
+  // 默认 api/submit 仍然可用
+  const sub = await worker.fetch(req("/cfgsite/api/submit", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: '{"a":1}',
+  }), BAY_ENV);
+  assert.equal(sub.status, 200);
+});
+
+await test("bay-config 非法 JSON → 上传 400 并给出明确提示", async () => {
+  const html = '<html><head><script type="application/json" id="bay-config">{broken<\/script></head><body>x</body></html>';
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "badcfg1", html }),
+  }), BAY_ENV);
+  assert.equal(r.status, 400);
+  assert.ok((await r.json()).error.includes("bay-config"));
+});
+
+await test("bay-config 未知操作 → 上传 400", async () => {
+  const cfg = { routes: [{ path: "api/x", method: "POST", ops: [{ op: "evalJs", code: "alert(1)" }] }] };
+  const html = '<html><head><script type="application/json" id="bay-config">'
+    + JSON.stringify(cfg) + '<\/script></head><body>x</body></html>';
+  const r = await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "badcfg2", html }),
+  }), BAY_ENV);
+  assert.equal(r.status, 400);
+  assert.ok((await r.json()).error.includes("未知操作"));
+});
+
+await test("GET 未命中的后端路径 → 回退静态服务（404）", async () => {
+  const r = await worker.fetch(req("/taken/api/nope"), BAY_ENV);
+  assert.equal(r.status, 404);
+});
+
+await test("KV 未配置：POST api/submit → 503 提示；GET 回退静态", async () => {
+  const p = await worker.fetch(req("/taken/api/submit", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), ENV);
+  assert.equal(p.status, 503);
+  const g = await worker.fetch(req("/taken/api/nope"), ENV);
+  assert.equal(g.status, 404); // 静态 404 页
+});
+
+await test("管理端删除站点会清空其后端 KV 数据", async () => {
+  const del = await worker.fetch(req("/api/admin/sites/cfgsite", { method: "DELETE", headers: AUTH }), { ...ADMIN_ENV, BAYKV });
+  assert.equal(del.status, 200);
+  const remain = [...BAYKV._map.keys()].filter((k) => k.startsWith("bay:cfgsite:"));
+  assert.equal(remain.length, 0, "bay:cfgsite: 前缀应被清空");
+});
+
+await test("复用过期站点名会清空旧后端数据", async () => {
+  state.files.set("sites/taken/.bay.json", JSON.stringify({ v: 1, created_at: 1, expire_at: Date.now() - 1 }));
+  const up = await worker.fetch(req("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "taken", html: "<h1>taken-v2</h1>" }),
+  }), BAY_ENV);
+  assert.equal((await up.json()).ok, true);
+  const remain = [...BAYKV._map.keys()].filter((k) => k.startsWith("bay:taken:"));
+  assert.equal(remain.length, 0, "旧的 submit 记录应随过期复用被清空");
+});
+
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败\n`);
 process.exit(failed ? 1 : 0);

@@ -3,6 +3,14 @@
 
 import { UI_HTML, FAVICON_SVG } from "./ui.js";
 import { ADMIN_HTML } from "./admin.js";
+import {
+  AI_GUIDE,
+  BackendError,
+  hasKV,
+  handleBackendRequest,
+  extractBayConfig,
+  deleteKVPrefix,
+} from "./backend.js";
 
 // ---------- 常量与限制 ----------
 const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/; // 1-40 位，小写字母/数字/连字符
@@ -368,9 +376,24 @@ async function getMetaWithSha(env, name) {
 
 const isExpired = (meta, now = Date.now()) => !!meta && meta.expire_at <= now;
 
-// 删除站点全部文件（含元数据）：把 sites/{name} 子树置空后一次提交，速度快且不受文件数影响
+// 生成站点过期检查闭包（站点后端接口命中时使用）：引擎自身不接触 GitHub 配置，
+// 过期判断由这里完成——过期则返回 true 并异步清理站点（deleteSite 会同时清空后端 KV 数据）
+function makeExpiredCheck(env, name, ctx) {
+  return async () => {
+    const meta = await getMeta(env, name);
+    if (!isExpired(meta)) return false;
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(deleteSite(env, name).catch(() => {}));
+    }
+    return true;
+  };
+}
+
+// 删除站点全部文件（含元数据）：把 sites/{name} 子树置空后一次提交，速度快且不受文件数影响；
+// 同时清空该站点的后端 KV 数据（未绑定 KV 时为空操作）
 async function deleteSite(env, name, blobs) {
   await deleteTree(env, `sites/${name}`, `cleanup(html-hosting): 过期删除 ${name}`);
+  await deleteKVPrefix(env, `bay:${name}:`);
 }
 
 // 轻量探测站点目录是否存在（非递归、单次请求）。删除时用它替代整仓库递归树扫描：
@@ -939,6 +962,19 @@ async function handleUpload(request, env) {
   const total = files.reduce((s, f) => s + f.bytes.length, 0);
   if (total > MAX_TOTAL_BYTES) throw new UserError("项目总大小超过 10MB 上限", 413);
 
+  // ---- 页面内嵌后端声明（可选）：从 index.html 抽取 <script id="bay-config"> 并校验 ----
+  // 嵌入了但不是合法 JSON / 结构不合法时直接报错，让用户回 AI 重新生成，而不是发布后接口莫名 404
+  let bayCfg = null;
+  const indexFile = files.find((f) => f.path.toLowerCase() === "index.html");
+  if (indexFile) {
+    try {
+      bayCfg = extractBayConfig(new TextDecoder("utf-8", { fatal: false }).decode(indexFile.bytes));
+    } catch (e) {
+      if (e instanceof BackendError) throw new UserError(e.message, 400);
+      bayCfg = null; // 解码失败等异常：忽略声明，按纯静态站点处理
+    }
+  }
+
   // ---- 单 IP 配额预检（成功发布后才累计） ----
   if (ip) await checkIpQuota(env, ip, total);
 
@@ -969,12 +1005,26 @@ async function handleUpload(request, env) {
   // ---- 配额记账（发布成功后才累计本次体积） ----
   if (ip) await consumeIpQuota(env, ip, total);
 
+  // ---- 后端声明同步到 KV（未绑定 KV 时为空操作；KV 故障不阻断发布结果） ----
+  // 全新名称本来就没有旧声明；复用过期名称时 deleteSite 已清空旧数据，这里兜底再清一次
+  let backendMode = "off";
+  if (hasKV(env)) {
+    backendMode = bayCfg ? "custom" : "default";
+    try {
+      if (bayCfg) await env.BAYKV.put(`bay:${name}:cfg`, JSON.stringify(bayCfg));
+      else await env.BAYKV.delete(`bay:${name}:cfg`);
+    } catch {
+      /* 忽略 KV 故障 */
+    }
+  }
+
   return json({
     ok: true,
     name,
     url: `/${name}/`,
     files: files.length,
     expiry_days: EXPIRY_DAYS[expiry],
+    backend: backendMode,
     ...(redirectTarget ? { redirect: redirectTarget } : {}),
   });
 }
@@ -1171,6 +1221,12 @@ export default {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...secHeaders() },
         });
       }
+      // ---- AI 指南页：给网页版 AI 阅读的"生成可托管页面"规则（小白把网址发给 AI 即可） ----
+      if (method === "GET" && (pathname === "/ai" || pathname === "/ai/")) {
+        return new Response(AI_GUIDE, {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...secHeaders() },
+        });
+      }
 
       // ---- API ----
       if (pathname === "/api/sites" && (method === "GET" || method === "HEAD")) {
@@ -1236,12 +1292,39 @@ export default {
         return json({ ok: false, error: "未知的 API 路径" }, 404);
       }
 
+      // ---- 站点后端接口 POST /{项目名}/api/*（声明式 KV 后端） ----
+      if (method === "POST") {
+        const segs = safeSegments(pathname);
+        if (segs && segs.length >= 2 && segs[1] === "api") {
+          const name = segs[0];
+          if (NAME_RE.test(name) && !RESERVED.has(name)) {
+            if (hasKV(env)) {
+              const r = await handleBackendRequest(env, request, name, segs.slice(1).join("/"), ctx, {
+                checkExpired: makeExpiredCheck(env, name, ctx),
+              });
+              if (r) return r;
+              return json({ ok: false, error: "未知的后端接口" }, 404);
+            }
+            return json({ ok: false, error: "站点后端未启用：需要在 wrangler.toml 绑定 KV 命名空间 BAYKV（见 README）" }, 503);
+          }
+        }
+      }
+
       // ---- 站点静态服务 /{项目名}/... ----
       if (method === "GET" || method === "HEAD") {
         const segs = safeSegments(pathname);
         if (segs && segs.length >= 1) {
           const name = segs[0];
           if (NAME_RE.test(name) && !RESERVED.has(name)) {
+            // ---- 站点后端接口 GET/HEAD /{项目名}/api/* ----
+            // 命中后端路由（或默认 api/submit）时返回响应；未命中返回 null 回退静态服务，
+            // 兼容站点自带 api/ 静态文件的老站点
+            if (segs[1] === "api" && hasKV(env)) {
+              const r = await handleBackendRequest(env, request, name, segs.slice(1).join("/"), ctx, {
+                checkExpired: makeExpiredCheck(env, name, ctx),
+              });
+              if (r) return r;
+            }
             const rest = segs.slice(1).join("/");
             if (!rest) {
               // /{项目名} → 301 到 /{项目名}/，保证站内相对路径正确解析
@@ -1258,7 +1341,7 @@ export default {
 
       return json({ ok: false, error: "方法不允许" }, 405);
     } catch (e) {
-      if (e instanceof UserError) return json({ ok: false, error: e.message }, e.status || 400);
+      if (e instanceof UserError || e instanceof BackendError) return json({ ok: false, error: e.message }, e.status || 400);
       return json({ ok: false, error: "服务器内部错误：" + (e && e.message ? e.message : String(e)) }, 500);
     }
   },
