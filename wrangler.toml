@@ -29,6 +29,6 @@ GH_REPO = "htmltuoguan"
 #   2) 把输出的 id 填到下面，并取消两行注释
 # 不开启时：静态托管完全不受影响，后端接口返回 503 提示未配置。
 #
-# [[kv_namespaces]]
-# binding = "BAYKV"
-# id = "00000000000000000000000000000000"   # ← 替换为第 1 步输出的 id
+[[kv_namespaces]]
+binding = "BAYKV"
+id = "23a7ead793154c0c830e0fc0cb716ae2"   # ← 替换为第 1 步输出的 id
