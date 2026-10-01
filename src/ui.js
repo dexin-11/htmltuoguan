@@ -368,7 +368,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
 
   <section class="hero">
     <h1>三步，把网页发布到互联网。</h1>
-    <p>上传你的 HTML 文件或压缩包，起个名字，几秒钟后就会获得一个任何人都能访问的公开网址。不需要服务器，也不需要懂部署。</p>
+    <p>上传你的 HTML 文件或压缩包，起个名字，几秒钟后就会获得一个全球都能访问的公开网址。</p>
     <div class="steps">
       <div class="step">
         <span class="step-num">1</span>
@@ -383,7 +383,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
       <div class="step">
         <span class="step-num">3</span>
         <b>点击发布</b>
-        <span>立刻获得链接，随手就能分享给朋友</span>
+        <span>立刻获得链接</span>
       </div>
     </div>
   </section>
@@ -395,7 +395,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
     <!-- 左：发布卡片 -->
     <section class="card">
       <h2 class="card-title">发布新网页</h2>
-      <p class="card-sub">按下面的三步操作即可，全程大约 10 秒钟。</p>
+      <p class="card-sub">按下面的三步操作即可</p>
 
       <!-- 第 1 步：内容 -->
       <div class="block">
@@ -440,7 +440,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         <div id="pane-redirect" class="hidden">
           <input class="text-input" id="redirect-input" type="text" spellcheck="false" autocomplete="off"
                  placeholder="例如：example.com 或 https://example.com/path" aria-label="跳转网址">
-          <p class="block-help">发布会把访问者自动重定向到这个网址，并显示一个过渡页面。无需上传内容。</p>
+          <p class="block-help">发布会把访问者自动重定向到这个网址，并显示一个过渡页面。</p>
         </div>
       </div>
 
@@ -462,18 +462,18 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         <div class="exp-grid" id="exp-grid">
           <button type="button" class="exp-opt" data-exp="3d" aria-label="保存 3 天">
             <span class="exp-check"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"/></svg></span>
-            <b>3 天</b><span>临时给朋友看看</span>
+            <b>3 天</b><span></span>
           </button>
           <button type="button" class="exp-opt active" data-exp="7d" aria-label="保存 7 天">
             <span class="exp-check"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"/></svg></span>
-            <b>7 天</b><span>最常用的选择</span>
+            <b>7 天</b><span></span>
           </button>
           <button type="button" class="exp-opt" data-exp="30d" aria-label="保存 1 个月">
             <span class="exp-check"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"/></svg></span>
-            <b>1 个月</b><span>较长时间使用</span>
+            <b>1 个月</b><span></span>
           </button>
         </div>
-        <p class="block-help">到期后网页会自动下线并清空文件，名字也会释放给别人使用。发布后随时可以重新上传。</p>
+        <p class="block-help"></p>
       </div>
 
       <!-- 可选：让 AI 生成带后端的网页 -->
@@ -531,7 +531,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
         </button>
       </div>
-      <p class="side-sub">这里只会显示这台浏览器发布过的网页，不会展示他人的站点。</p>
+      <p class="side-sub">这里只会显示这台浏览器发布过的网页</p>
 
       <div id="site-list"></div>
       <div class="empty" id="empty">
