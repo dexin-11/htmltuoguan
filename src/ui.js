@@ -200,7 +200,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;font-size:
 .exp-opt.active{background:var(--blue-soft);border-color:var(--blue)}
 .exp-opt b{display:block;font-size:16px;font-weight:700;letter-spacing:-.01em}
 .exp-opt.active b{color:var(--blue)}
-.exp-opt span{display:block;font-size:12px;color:var(--text3);margin-top:2px}
+.exp-opt > span:last-child{display:block;font-size:12px;color:var(--text3);margin-top:2px}
 .exp-check{width:18px;height:18px;margin:0 auto 6px;border-radius:50%;border:1.5px solid #c7c7cc;display:grid;place-items:center;transition:all .2s}
 .exp-opt.active .exp-check{background:var(--blue);border-color:var(--blue)}
 .exp-opt.active .exp-check svg{opacity:1}
