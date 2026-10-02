@@ -408,10 +408,10 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         </div>
         <p class="block-help">把网址和一句话需求一起发给 AI，例如："按这个网址的规则做一个留言板"。</p>
         <div class="ai-row">
-          <code class="ai-text" id="ai-prompt-text">做一个{功能}…（AI 打不开网址时用）</code>
+          <code class="ai-text" id="ai-prompt-text">做一个{功能}…（备选 · AI 打不开网址时用）</code>
           <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-prompt"><span>复制提示词</span></button>
         </div>
-        <p class="block-help">AI 打不开网址时改用它：把「{功能}」换成你要的东西，例如 留言板、报名表。</p>
+        <p class="block-help">这是备选：AI 打不开网址时才用它（只简述后端接口，完整规则仍以网址为准）。把「{功能}」换成你要的东西，例如 留言板、报名表。</p>
         <p class="block-help"><b>第 2 步 · 拿到结果后照常上传</b>：AI 会给一个 index.html（Agent 会给 ZIP），在下面「选择内容」里上传即可。访客提交的数据保存在平台、刷新不丢失（站点到期后随站点一起清除）。</p>
       </details>
 
@@ -1027,8 +1027,8 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
   };
 }
 
-/* AI 规则网址与提示词（一键复制，供网页版 AI 生成带后端的页面） */
-var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。若用了后端，界面要显眼提示「后端更新约需 1 分钟」；不要写死数据有效期天数（有效期由用户在控制台自行选择）。输出完代码后必须告诉用户怎么发布：用手机或电脑浏览器打开 ' + location.origin + ' ，切到「粘贴代码」，在输入框里长按再点「粘贴」（不要点手机键盘上的粘贴键，常常粘不进去），填项目名、选有效期后点「发布我的网页」；也可以把代码存成 .html 或打包成 zip 后在同一页面拖拽/点选上传。';
+/* AI 规则网址与提示词（网址为准；提示词是 AI 读不了网址时的简短备选，只介绍后端接口） */
+var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联、不引用外部资源）。存数据用相对路径 fetch 到 api/submit：POST 提交 JSON 即保存，GET 返回最近 50 条记录（时间倒序）的 JSON 数组。';
 var aiUrl = location.origin + '/ai';
 $('ai-url-text').textContent = aiUrl;
 $('copy-ai-url').onclick = function(){ copyText(aiUrl, this); };
