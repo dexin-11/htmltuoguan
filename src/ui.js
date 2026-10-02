@@ -336,7 +336,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
   .nav-right .nav-status span{display:none}
 }
 /* ── AI 生成带后端网页的可选提示 ─────────── */
-.ai-tip{background:var(--blue-soft);border:1px solid rgba(0,113,227,.18);border-radius:var(--r-md);padding:14px 16px;margin:-10px 0 26px;font-size:14px}
+.ai-tip{background:var(--blue-soft);border:1px solid rgba(0,113,227,.18);border-radius:var(--r-md);padding:14px 16px;margin:0 0 26px;font-size:14px}
 .ai-tip summary{cursor:pointer;font-weight:600;color:var(--blue-deep);list-style:none;display:flex;align-items:center;gap:8px}
 .ai-tip summary::-webkit-details-marker{display:none}
 .ai-tip summary::before{content:'+';width:18px;height:18px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:14px;flex:none;line-height:1}
@@ -396,6 +396,24 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
     <section class="card">
       <h2 class="card-title">发布新网页</h2>
       <p class="card-sub">按下面的三步操作即可</p>
+
+      <!-- 可选进阶：让 AI 生成能存数据的网页（放在选择内容之前，先让用户知道能做什么） -->
+      <details class="ai-tip">
+        <summary>想让网页能存数据？（留言板 / 表单 · 可选进阶）</summary>
+        <p class="block-help">普通的静态网页，访客填的内容一刷新就没了。想要<strong>留言板、报名表、投票</strong>这种能真正保存数据的网页，不用自己写后端——平台已内置数据存储，让 AI 生成即可。</p>
+        <p class="block-help"><b>第 1 步 · 复制下面任意一项，发给 AI</b>（ChatGPT、豆包、Claude、Cursor 都行）</p>
+        <div class="ai-row">
+          <code class="ai-text" id="ai-url-text">/ai</code>
+          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-url"><span>复制网址</span></button>
+        </div>
+        <p class="block-help">把网址和一句话需求一起发给 AI，例如："按这个网址的规则做一个留言板"。</p>
+        <div class="ai-row">
+          <code class="ai-text" id="ai-prompt-text">做一个{功能}…（AI 打不开网址时用）</code>
+          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-prompt"><span>复制提示词</span></button>
+        </div>
+        <p class="block-help">AI 打不开网址时改用它：把「{功能}」换成你要的东西，例如 留言板、报名表。</p>
+        <p class="block-help"><b>第 2 步 · 拿到结果后照常上传</b>：AI 会给一个 index.html（Agent 会给 ZIP），在下面「选择内容」里上传即可。访客提交的数据保存在平台、刷新不丢失（站点到期后随站点一起清除）。</p>
+      </details>
 
       <!-- 第 1 步：内容 -->
       <div class="block">
@@ -475,21 +493,6 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
         </div>
         <p class="block-help"></p>
       </div>
-
-      <!-- 可选：让 AI 生成带后端的网页 -->
-      <details class="ai-tip">
-        <summary>想要留言板 / 表单能真的存数据？（可选进阶）</summary>
-        <p class="block-help">每个发布的网页都自动带一个数据接口。用网页版 AI 或 Agent（ChatGPT、豆包、Claude、Cursor 等）生成页面时，把下面任意一份内容一并发给它，它就会按平台规则生成能存数据的页面（网页版 AI 出单个 index.html，Agent 出可含多文件的 ZIP）：</p>
-        <div class="ai-row">
-          <code class="ai-text" id="ai-url-text">/ai</code>
-          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-url"><span>复制网址</span></button>
-        </div>
-        <div class="ai-row">
-          <code class="ai-text" id="ai-prompt-text">做一个{功能}…（一句话提示词）</code>
-          <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-prompt"><span>复制提示词</span></button>
-        </div>
-        <p class="block-help">拿到 AI 生成的 index.html（或 ZIP）后，像平常一样上传即可；访客提交的数据保存在平台上，刷新不丢失（站点到期后随站点一起清除）。</p>
-      </details>
 
       <button class="publish-btn" id="publish-btn" type="button">
         <span id="publish-label">发布我的网页</span>
