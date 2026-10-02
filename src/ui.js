@@ -1025,7 +1025,7 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
 }
 
 /* AI 规则网址与提示词（一键复制，供网页版 AI 生成带后端的页面） */
-var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。若用了后端，界面要显眼提示「后端更新约需 1 分钟」；不要写死数据有效期天数（有效期由用户在控制台自行选择）。';
+var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。若用了后端，界面要显眼提示「后端更新约需 1 分钟」；不要写死数据有效期天数（有效期由用户在控制台自行选择）。输出完代码后必须告诉用户怎么发布：用手机或电脑浏览器打开 ' + location.origin + ' ，切到「粘贴代码」，在输入框里长按再点「粘贴」（不要点手机键盘上的粘贴键，常常粘不进去），填项目名、选有效期后点「发布我的网页」；也可以把代码存成 .html 或打包成 zip 后在同一页面拖拽/点选上传。';
 var aiUrl = location.origin + '/ai';
 $('ai-url-text').textContent = aiUrl;
 $('copy-ai-url').onclick = function(){ copyText(aiUrl, this); };

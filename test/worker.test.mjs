@@ -1050,6 +1050,10 @@ await test("GET /ai 返回 AI 规则指南页", async () => {
   assert.ok(txt.includes("api/submit"), "应包含接口约定");
   assert.ok(txt.includes("320px"), "应包含防溢出自查要求");
   assert.ok(txt.includes("textContent"), "应包含防 XSS 自查要求");
+  assert.ok(txt.includes("ZIP"), "应包含 Agent 输出 ZIP 的规则");
+  assert.ok(txt.includes("长按"), "应包含长按粘贴的发布引导");
+  assert.ok(txt.includes(ORIGIN), "发布地址应自动使用当前访问域名");
+  assert.ok(txt.includes("/api/upload"), "应包含 Agent 直传接口");
   assert.ok(r.headers.get("x-robots-tag"), "应带安全头");
 });
 

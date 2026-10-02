@@ -4,7 +4,7 @@
 import { UI_HTML, FAVICON_SVG } from "./ui.js";
 import { ADMIN_HTML } from "./admin.js";
 import {
-  AI_GUIDE,
+  buildAiGuide,
   BackendError,
   hasKV,
   handleBackendRequest,
@@ -1221,9 +1221,9 @@ export default {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...secHeaders() },
         });
       }
-      // ---- AI 指南页：给网页版 AI 阅读的"生成可托管页面"规则（小白把网址发给 AI 即可） ----
+      // ---- AI 指南页：给网页版 AI / Agent 阅读的"生成可托管页面 + 如何发布"规则（把网址发给 AI 即可） ----
       if (method === "GET" && (pathname === "/ai" || pathname === "/ai/")) {
-        return new Response(AI_GUIDE, {
+        return new Response(buildAiGuide(url.origin), {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...secHeaders() },
         });
       }

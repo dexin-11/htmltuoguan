@@ -465,8 +465,11 @@ export function validateBackendConfig(cfg) {
   return { version: 1, routes: normalized };
 }
 
-// ---------- AI 指南页（/ai，供网页版 AI 阅读的生成规则） ----------
-export const AI_GUIDE = `<!DOCTYPE html>
+// ---------- AI 指南页（/ai，供网页版 AI / Agent 阅读的生成规则） ----------
+// 传入当前访问域名（origin），页内「去哪里发布」的地址随之自动变化，换域名无需改代码。
+export function buildAiGuide(origin) {
+  const site = origin || "https://dxxx.cc.cd";
+  return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -481,6 +484,7 @@ export const AI_GUIDE = `<!DOCTYPE html>
 <ul>
   <li><strong>A. 网页版 AI</strong>（ChatGPT / 豆包 / Claude 等对话网页，只能给一段文本）：产出<strong>单个 index.html</strong>，见第 1 节。</li>
   <li><strong>B. Agent / 编程助手</strong>（能新建文件、能打包 ZIP）：产出<strong>一个 ZIP</strong>，内部可含多个文件，见第 2 节。</li>
+  <li><strong>输出完成后</strong>：必须告诉用户去哪里粘贴 / 上传发布（见第 5 节）。</li>
 </ul>
 
 <h2>1. 网页版 AI：输出单个 index.html</h2>
@@ -524,12 +528,36 @@ export const AI_GUIDE = `<!DOCTYPE html>
 </ul>
 
 <h2>4. 输出前自检清单</h2>
-<p>生成后逐项核对，全部通过再输出：① 形态正确（A 单个 index.html；B 一个 ZIP 且根目录有 index.html）② 是否单文件且无任何外链（B 为所有资源已打包、无外链）③ 是否用相对路径 api/submit（子目录层级正确）④ 320px 窄屏是否溢出 ⑤ 长文本/长链接是否换行 ⑥ 渲染用户内容是否防 XSS ⑦ 是否有加载/错误/空态处理 ⑧ 控制台是否零报错 ⑨ 用了后端是否已提示「后端更新约需 1 分钟」⑩ 是否没有写死数据有效期天数 ⑪ 体积是否达标（A &lt; 300KB；B 总量 ≤ 10MB、单文件 ≤ 3MB、文件数 ≤ 200）。</p>
+<p>生成后逐项核对，全部通过再输出：① 形态正确（A 单个 index.html；B 一个 ZIP 且根目录有 index.html）② 是否单文件且无任何外链（B 为所有资源已打包、无外链）③ 是否用相对路径 api/submit（子目录层级正确）④ 320px 窄屏是否溢出 ⑤ 长文本/长链接是否换行 ⑥ 渲染用户内容是否防 XSS ⑦ 是否有加载/错误/空态处理 ⑧ 控制台是否零报错 ⑨ 用了后端是否已提示「后端更新约需 1 分钟」⑩ 是否没有写死数据有效期天数 ⑪ 体积是否达标（A &lt; 300KB；B 总量 ≤ 10MB、单文件 ≤ 3MB、文件数 ≤ 200）⑫ 结尾是否已附「去哪里发布」的引导（打开平台地址 + 长按粘贴 / 上传 ZIP）。</p>
 
-<h2>5. 最小示例</h2>
+<h2>5. 输出后必须告诉用户怎么发布（结尾固定附上）</h2>
+<p>代码输出 / 打包完成后，<strong>必须紧接着告诉用户去哪里发布</strong>；当前平台地址是：<code>${site}</code>（结尾照抄即可）。</p>
+<ul>
+  <li><strong>A 网页版 AI（贴代码）</strong>：告诉用户 —— ① 用手机或电脑浏览器打开 <code>${site}</code>；② 切到「粘贴代码」，在输入框里<strong>长按</strong>再点「粘贴」（<strong>不要点手机键盘上的粘贴键</strong>，常常粘不进去）；③ 填项目名、选有效期（3 天 / 7 天 / 1 个月）→ 点「发布我的网页」→ 复制返回的链接。</li>
+  <li><strong>HTML / ZIP 文件</strong>：告诉用户在同一页面把 <code>.html</code> 或 <code>.zip</code> 拖进（或点选）上传框即可。</li>
+  <li><strong>B Agent 有能力时代传</strong>：若你可以联网发送请求，可直接调用上传接口替用户发布（见 5.1）；没有联网能力就按上面两步引导用户。</li>
+</ul>
+<h3>5.1 Agent 直接上传接口</h3>
+<pre># 方式一：直接贴 HTML（JSON）
+curl -X POST ${site}/api/upload \\
+  -H 'Content-Type: application/json' \\
+  -d '{"name":"my-site","html":"&lt;h1&gt;hello&lt;/h1&gt;","expiry":"7d"}'
+
+# 方式二：上传 html / zip 文件（multipart）
+curl -X POST ${site}/api/upload \\
+  -F name=my-site -F expiry=7d -F file=@site.zip</pre>
+<ul>
+  <li>项目名规则：<code>^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$</code>（小写字母 / 数字 / 连字符，1-40 位，不能用 <code>api</code> / <code>admin</code>）。</li>
+  <li><code>expiry</code> 可选 <code>3d</code> / <code>7d</code> / <code>30d</code>，由<strong>用户选择</strong>，不要替用户写死；不填按 7d 处理。</li>
+  <li>成功返回 <code>{"ok":true,"name":"名字","url":"/名字/"}</code>；名称被占用返回 <strong>409</strong>，需换名或告知用户。</li>
+  <li>上传前先按第 2 节自查体积，超限会被 <strong>413 / 400</strong> 拒绝。</li>
+</ul>
+
+<h2>6. 最小示例</h2>
 <pre>// 提交
 await fetch('api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,text})});
 // 读取（渲染前务必转义，禁止 innerHTML 直接插入用户输入）
 const list = await (await fetch('api/submit')).json();</pre>
 </body>
 </html>`;
+}
