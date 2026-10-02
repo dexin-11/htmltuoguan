@@ -1,0 +1,20 @@
+演示留言板 · 平台全流程测试站点
+================================
+
+用途：验证「网页版 ZIP 上传」与「API 接口上传」两条发布链路，以及声明式后端
+（bay-config）的各类操作是否在真实环境（dxxx.cc.cd）下正常工作。
+
+文件构成（多文件 ZIP，根目录含 index.html）：
+  index.html        页面骨架 + 内嵌 bay-config 后端声明 + <link> 引用样式
+  assets/style.css  样式（纯系统字体，无任何外部资源）
+  assets/app.js     交互逻辑（渲染全部用 textContent，防 XSS）
+  notes.txt         本说明
+
+后端路由（bay-config 声明）：
+  POST api/msg    限流 20/分 · 读体 · 校验(name≤40,text≤500) · 读 UA · 追加 · 回读最新 5 条
+  GET  api/msgs   读查询参数 · 列出最近 20 条
+  POST api/vote   校验 · kvPut 保存最近一次投票
+  GET  api/stats  限流 60/分 · kvGet · list · 模板取数组长度
+  GET  api/greet  返回纯文本（非 JSON）
+  POST api/purge  口令门禁 X-Purge-Token=demo-secret-2026 · del
+  另：未声明的 api/submit 走平台默认接口（POST 存一条 / GET 返回最近 50 条）

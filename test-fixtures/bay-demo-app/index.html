@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>演示留言板 · Bay 后端测试站</title>
+<link rel="stylesheet" href="assets/style.css">
+<!--
+  bay-config：声明式后端自定义路由（本测试站用到的全部能力）
+    api/msg    POST  限流 + 读体 + 校验 + 读请求头 + 追加记录 + 回读最新 5 条
+    api/msgs   GET   读查询参数 + 列出最近 20 条
+    api/vote   POST  校验 + kvPut 存最近一次投票
+    api/stats  GET   限流 + kvGet + list + 数组长度模板
+    api/greet  GET   返回纯文本（非 JSON）
+    api/purge  POST  口令门禁（X-Purge-Token）+ 删除
+  另外未声明的 api/submit 使用平台默认接口（POST 存一条 / GET 返回最近 50 条）
+-->
+<script type="application/json" id="bay-config">
+{"routes":[
+  {"path":"api/msg","method":"POST","ops":[
+    {"op":"rateLimit","key":"msg","max":20,"windowSec":60},
+    {"op":"readBody"},
+    {"op":"validate","rules":{"name":"required|max:40","text":"required|max:500"}},
+    {"op":"readHeader","name":"User-Agent","as":"ua"},
+    {"op":"append","collection":"msgs","item":{"name":"{{body.name}}","text":"{{body.text}}","ua":"{{vars.ua}}"}},
+    {"op":"list","collection":"msgs","limit":5,"as":"latest"},
+    {"op":"returnJson","body":{"ok":true,"latest":"{{vars.latest}}","site":"{{site}}","server_now":"{{now}}"}}
+  ]},
+  {"path":"api/msgs","method":"GET","ops":[
+    {"op":"readQuery"},
+    {"op":"list","collection":"msgs","limit":20,"as":"msgs"},
+    {"op":"returnJson","body":{"ok":true,"items":"{{vars.msgs}}","q":"{{query.q}}"}}
+  ]},
+  {"path":"api/vote","method":"POST","ops":[
+    {"op":"readBody"},
+    {"op":"validate","rules":{"choice":"required|max:20"}},
+    {"op":"kvPut","key":"last-vote","value":{"choice":"{{body.choice}}","ts":"{{now}}"}},
+    {"op":"returnJson","body":{"ok":true,"saved":"{{body.choice}}"}}
+  ]},
+  {"path":"api/stats","method":"GET","ops":[
+    {"op":"rateLimit","key":"stats","max":60,"windowSec":60},
+    {"op":"kvGet","key":"last-vote","as":"lastVote"},
+    {"op":"list","collection":"msgs","limit":50,"as":"msgs"},
+    {"op":"returnJson","body":{"ok":true,"messages":"{{vars.msgs.length}}","last_vote":"{{vars.lastVote}}","site":"{{site}}","now":"{{now}}"}}
+  ]},
+  {"path":"api/greet","method":"GET","ops":[
+    {"op":"readQuery"},
+    {"op":"returnText","body":"你好，{{query.name}}！这里是 {{site}} 的示例后端，服务器时间 {{now}}。","contentType":"text/plain; charset=utf-8"}
+  ]},
+  {"path":"api/purge","method":"POST","ops":[
+    {"op":"checkToken","name":"X-Purge-Token","equals":"demo-secret-2026"},
+    {"op":"del","key":"last-vote"},
+    {"op":"returnJson","body":{"ok":true,"purged":"last-vote"}}
+  ]}
+]}
+</script>
+</head>
+<body>
+<header class="hero">
+  <h1>演示留言板</h1>
+  <p class="sub">多文件 ZIP 站点 · 带 <code>bay-config</code> 自定义后端 · 无任何外部资源</p>
+  <p class="api" id="api-base"></p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 留言板 <span class="tag">POST api/msg</span></h2>
+    <form id="msg-form" autocomplete="off">
+      <label>昵称<input id="f-name" maxlength="40" placeholder="最多 40 字" required></label>
+      <label>留言<textarea id="f-text" maxlength="500" rows="3" placeholder="最多 500 字" required></textarea></label>
+      <button type="submit" id="msg-btn">提交留言</button>
+    </form>
+    <p class="hint" id="msg-hint"></p>
+    <ul class="msgs" id="msg-list"></ul>
+    <button class="ghost" id="reload-btn" type="button">刷新列表</button>
+  </section>
+
+  <section class="card">
+    <h2>2. 投票 <span class="tag">POST api/vote · GET api/stats</span></h2>
+    <div class="votes">
+      <button type="button" data-choice="很好">很好</button>
+      <button type="button" data-choice="一般">一般</button>
+      <button type="button" data-choice="需改进">需改进</button>
+    </div>
+    <p class="hint" id="vote-hint"></p>
+    <pre class="stats" id="stats">加载中…</pre>
+  </section>
+
+  <section class="card">
+    <h2>3. 纯文本接口 <span class="tag">GET api/greet</span></h2>
+    <div class="row">
+      <input id="g-name" placeholder="输入名字" maxlength="20">
+      <button type="button" id="g-btn">打招呼</button>
+    </div>
+    <pre class="stats" id="greet-out">—</pre>
+  </section>
+
+  <section class="card">
+    <h2>4. 口令门禁 <span class="tag">POST api/purge</span></h2>
+    <p class="hint">需要请求头 <code>X-Purge-Token</code> 正确才放行，否则 401。</p>
+    <div class="row">
+      <button type="button" id="p-ok">带正确口令清除</button>
+      <button type="button" id="p-bad">用错口令试试</button>
+    </div>
+    <pre class="stats" id="purge-out">—</pre>
+  </section>
+
+  <section class="card">
+    <h2>5. 平台默认接口 <span class="tag">api/submit</span></h2>
+    <p class="hint">未在 bay-config 里声明，走平台内置默认接口：POST 存一条 JSON，GET 返回最近 50 条。</p>
+    <div class="row">
+      <button type="button" id="d-post">提交一条</button>
+      <button type="button" id="d-get">读取最近记录</button>
+    </div>
+    <pre class="stats" id="default-out">—</pre>
+  </section>
+</main>
+
+<footer>测试站点 · 页面渲染全部使用 textContent，防 XSS</footer>
+<script src="assets/app.js"></script>
+</body>
+</html>

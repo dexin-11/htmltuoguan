@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API 上传测试页 · 回声机</title>
+<!-- 单文件页面，自带 bay-config 后端：POST api/echo 存一条并返回总数，GET api/echo 列出全部 -->
+<script type="application/json" id="bay-config">
+{"routes":[
+  {"path":"api/echo","method":"POST","ops":[
+    {"op":"rateLimit","key":"echo","max":30,"windowSec":60},
+    {"op":"readBody"},
+    {"op":"validate","rules":{"msg":"required|max:200"}},
+    {"op":"append","collection":"echoes","item":{"msg":"{{body.msg}}","ip_tag":"{{query.tag}}"}},
+    {"op":"list","collection":"echoes","limit":50,"as":"rows"},
+    {"op":"returnJson","body":{"ok":true,"total":"{{vars.rows.length}}","echo":"{{body.msg}}","site":"{{site}}"}}
+  ]},
+  {"path":"api/echo","method":"GET","ops":[
+    {"op":"list","collection":"echoes","limit":50,"as":"rows"},
+    {"op":"returnJson","body":{"ok":true,"items":"{{vars.rows}}"}}
+  ]}
+]}
+</script>
+<style>
+body{margin:0;padding:24px 16px 40px;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#1d1d1f;line-height:1.65;overflow-wrap:break-word}
+main{max-width:640px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+p.sub{color:#6e6e73;font-size:13px;margin:0 0 18px}
+input,button{font:inherit;font-size:14px;padding:9px 12px;border-radius:8px;border:1px solid #e5e5ea}
+input{width:100%}
+button{border:0;background:#0a84ff;color:#fff;cursor:pointer;margin-top:8px}
+button:disabled{opacity:.5}
+pre{background:#f5f5f7;border-radius:8px;padding:10px 12px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+ul{list-style:none;padding:0;font-size:14px}
+li{border-top:1px solid #e5e5ea;padding:8px 0}
+.err{color:#c0392b;font-size:13px}
+.ok{color:#1a7f37;font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>API 上传测试页 · 回声机</h1>
+  <p class="sub">单文件 HTML（无外部资源）· 自带 <code>bay-config</code> 后端 · 通过 POST /api/upload 的 JSON 方式发布</p>
+
+  <label for="msg">输入内容（≤200 字）</label>
+  <input id="msg" maxlength="200" placeholder="例如：这条是通过 API 发布的">
+  <button id="send" type="button">提交回声</button>
+  <p id="hint" class="sub"></p>
+
+  <h3 style="font-size:15px;margin:18px 0 6px">回声列表（GET api/echo）</h3>
+  <ul id="list"></ul>
+  <pre id="raw">加载中…</pre>
+</main>
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  function paint(rows){
+    var ul = $('list');
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    if (!rows || !rows.length){
+      var li = document.createElement('li');
+      li.textContent = '（还没有记录）';
+      ul.appendChild(li);
+      return;
+    }
+    rows.forEach(function(r){
+      var li = document.createElement('li');
+      li.textContent = (r && r.msg ? String(r.msg) : '') + (r && r.ts ? '  ·  ' + new Date(Number(r.ts)).toLocaleString('zh-CN', {hour12:false}) : '');
+      ul.appendChild(li);
+    });
+  }
+  function load(){
+    fetch('api/echo').then(function(res){ return res.json(); }).then(function(j){
+      paint(j.items);
+      $('raw').textContent = JSON.stringify(j, null, 2);
+    }).catch(function(e){
+      $('raw').textContent = '读取失败：' + e.message;
+    });
+  }
+  $('send').addEventListener('click', function(){
+    var v = ($('msg').value || '').trim();
+    if (!v){ $('hint').className = 'err'; $('hint').textContent = '内容不能为空。'; return; }
+    var b = $('send'); b.disabled = true;
+    $('hint').className = 'sub'; $('hint').textContent = '提交中…';
+    fetch('api/echo?tag=api-paste', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ msg: v }) })
+      .then(function(res){ return res.json().then(function(j){ return { s: res.status, j: j }; }); })
+      .then(function(r){
+        if (!r.j || r.j.ok === false){ $('hint').className = 'err'; $('hint').textContent = '失败（' + r.s + '）：' + ((r.j && r.j.error) || '未知错误'); }
+        else { $('hint').className = 'ok'; $('hint').textContent = '已保存，服务器当前共 ' + r.j.total + ' 条。'; $('msg').value = ''; load(); }
+      })
+      .catch(function(e){ $('hint').className = 'err'; $('hint').textContent = '网络错误：' + e.message; })
+      .then(function(){ b.disabled = false; });
+  });
+  load();
+})();
+</script>
+</body>
+</html>
