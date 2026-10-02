@@ -472,28 +472,49 @@ export const AI_GUIDE = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI 生成页面规则 · 网页托管舱</title>
-<style>body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:760px;margin:32px auto;padding:0 20px;line-height:1.7;color:#1d1d1f}h1{font-size:24px}h2{font-size:18px;margin-top:28px;border-bottom:1px solid #e8e8ed;padding-bottom:6px}code,pre{background:#f5f5f7;border-radius:6px;padding:2px 6px;font-size:13px}pre{padding:12px;overflow:auto}li{margin:6px 0}</style>
+<style>body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:760px;margin:32px auto;padding:0 20px;line-height:1.7;color:#1d1d1f}h1{font-size:24px}h2{font-size:18px;margin-top:28px;border-bottom:1px solid #e8e8ed;padding-bottom:6px}code,pre{background:#f5f5f7;border-radius:6px;padding:2px 6px;font-size:13px}pre{padding:12px;overflow:auto}h3{font-size:15px;margin-top:20px}li{margin:6px 0}</style>
 </head>
 <body>
 <h1>本托管平台 · AI 生成页面规则（务必逐条遵守）</h1>
 
-<h2>1. 输出格式</h2>
+<p>先判断你是哪一类，按对应规则产出；<strong>第 3 节的通用要求 A / B 都适用</strong>：</p>
+<ul>
+  <li><strong>A. 网页版 AI</strong>（ChatGPT / 豆包 / Claude 等对话网页，只能给一段文本）：产出<strong>单个 index.html</strong>，见第 1 节。</li>
+  <li><strong>B. Agent / 编程助手</strong>（能新建文件、能打包 ZIP）：产出<strong>一个 ZIP</strong>，内部可含多个文件，见第 2 节。</li>
+</ul>
+
+<h2>1. 网页版 AI：输出单个 index.html</h2>
 <ul>
   <li>只输出<strong>一个 index.html</strong>，所有 CSS/JS 内联，<strong>不引用任何外部库、字体、CSS、图片或 API</strong>——外链都不会被托管，会加载失败。</li>
   <li>字体只用系统字体栈：<code>font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;</code></li>
   <li>文件尽量小（建议 &lt; 300KB）；平台<strong>单文件上限 3MB</strong>，超限无法上传。</li>
 </ul>
 
-<h2>2. 后端约定（存数据用）</h2>
+<h2>2. Agent：输出一个 ZIP（可含多文件）</h2>
+<ul>
+  <li>产物是<strong>一个 ZIP 包</strong>，包内<strong>根目录必须有 index.html</strong>（外层多余文件夹平台会自动剥离）。</li>
+  <li>可以有多个文件：本地 <code>.js</code> / <code>.css</code> / 图片等资源，用<strong>相对路径</strong>引用（如 <code>./assets/app.js</code>）。</li>
+  <li><strong>仍禁止外链</strong>：不引用 CDN、外部字体、外部图片、第三方接口，所有资源都要随 ZIP 一起打包。</li>
+  <li>页面在<strong>子目录</strong>时，引用资源与后端接口的相对路径要按层级写对（如 <code>sub/index.html</code> 里用 <code>../api/submit</code>）。</li>
+  <li><strong>打包前必须自查体积</strong>（超限会被平台直接拒绝）：解压后<strong>总量 ≤ 10MB</strong>、<strong>单个文件 ≤ 3MB</strong>、<strong>文件数 ≤ 200</strong>；超了就先删冗余资源、压缩图片再打包。</li>
+</ul>
+
+<h2>3. 通用要求（A / B 都适用）</h2>
+<h3>3.1 后端约定（存数据用）</h3>
 <ul>
   <li>数据用<strong>相对路径</strong> fetch 到 <code>api/submit</code>（前面不要加 / 或域名，否则打到错误地址）。</li>
   <li>POST：body 为 JSON，字段名自定；GET：返回该站点全部提交记录的 JSON 数组（<strong>最多 50 条，按时间倒序</strong>）。</li>
   <li>每条记录建议 ≤ 1KB；<strong>单次请求体 ≤ 256KB</strong>；同一访客每站点每小时最多 <strong>60 次</strong>请求。</li>
-  <li>站点默认 <strong>7 天</strong>后过期自动删除（可选 3/30 天），提醒用户数据非永久保存。</li>
   <li>平台已为每个站点预置 api/submit：POST 存全部字段，GET 列出记录。</li>
+  <li><strong>只要页面用了后端（fetch api/submit 等），界面上必须显眼提示用户「后端更新约需 1 分钟」</strong>，避免用户以为改动没生效。</li>
 </ul>
-
-<h2>3. 必须自查的 bug（用户是小白，你生成的页面要直接能用）</h2>
+<h3>3.2 数据有效期（重要，别写错）</h3>
+<ul>
+  <li><strong>不要写死具体天数</strong>：绝不能在页面里出现「数据有效期 7 天」这类文案。</li>
+  <li>站点有效期<strong>由上传者在控制台自己选择</strong>（3 天 / 7 天 / 1 个月），数据随站点一起保留，站点到期后一并清除。</li>
+  <li>如需提示，只说「数据随站点保存，站点到期后清除」，不要擅自承诺天数。</li>
+</ul>
+<h3>3.3 必须自查的 bug（用户是小白，你生成的页面要直接能用）</h3>
 <ul>
   <li><strong>不溢出</strong>：容器加 <code>max-width:100%; overflow-wrap:break-word; word-break:break-word;</code>；长文本、长链接、无空格字符串不撑破布局；按钮/卡片在窄屏不溢出。</li>
   <li><strong>响应式</strong>：必须有 <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;</code>；用 flex/grid 并在小屏自动换行；在 <strong>320px 宽</strong>下也正常显示。</li>
@@ -503,7 +524,7 @@ export const AI_GUIDE = `<!DOCTYPE html>
 </ul>
 
 <h2>4. 输出前自检清单</h2>
-<p>生成后逐项核对，全部通过再输出：① 是否单文件且无任何外链 ② 是否用相对路径 api/submit ③ 320px 窄屏是否溢出 ④ 长文本/长链接是否换行 ⑤ 渲染用户内容是否防 XSS ⑥ 是否有加载/错误/空态处理 ⑦ 控制台是否零报错 ⑧ 文件是否明显小于 3MB。</p>
+<p>生成后逐项核对，全部通过再输出：① 形态正确（A 单个 index.html；B 一个 ZIP 且根目录有 index.html）② 是否单文件且无任何外链（B 为所有资源已打包、无外链）③ 是否用相对路径 api/submit（子目录层级正确）④ 320px 窄屏是否溢出 ⑤ 长文本/长链接是否换行 ⑥ 渲染用户内容是否防 XSS ⑦ 是否有加载/错误/空态处理 ⑧ 控制台是否零报错 ⑨ 用了后端是否已提示「后端更新约需 1 分钟」⑩ 是否没有写死数据有效期天数 ⑪ 体积是否达标（A &lt; 300KB；B 总量 ≤ 10MB、单文件 ≤ 3MB、文件数 ≤ 200）。</p>
 
 <h2>5. 最小示例</h2>
 <pre>// 提交

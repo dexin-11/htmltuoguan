@@ -479,7 +479,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
       <!-- 可选：让 AI 生成带后端的网页 -->
       <details class="ai-tip">
         <summary>想要留言板 / 表单能真的存数据？（可选进阶）</summary>
-        <p class="block-help">每个发布的网页都自动带一个数据接口。用网页版 AI（ChatGPT、豆包、Claude 等）生成页面时，把下面任意一份内容一并发给它，它就会按平台规则生成能存数据的页面：</p>
+        <p class="block-help">每个发布的网页都自动带一个数据接口。用网页版 AI 或 Agent（ChatGPT、豆包、Claude、Cursor 等）生成页面时，把下面任意一份内容一并发给它，它就会按平台规则生成能存数据的页面（网页版 AI 出单个 index.html，Agent 出可含多文件的 ZIP）：</p>
         <div class="ai-row">
           <code class="ai-text" id="ai-url-text">/ai</code>
           <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-url"><span>复制网址</span></button>
@@ -488,7 +488,7 @@ noscript{display:block;text-align:center;padding:20px;color:var(--red);backgroun
           <code class="ai-text" id="ai-prompt-text">做一个{功能}…（一句话提示词）</code>
           <button type="button" class="pill-btn ghost ai-copy" id="copy-ai-prompt"><span>复制提示词</span></button>
         </div>
-        <p class="block-help">拿到 AI 生成的 index.html 后，像平常一样上传即可；访客提交的数据保存在平台上，刷新不丢失（站点到期后随站点一起清除）。</p>
+        <p class="block-help">拿到 AI 生成的 index.html（或 ZIP）后，像平常一样上传即可；访客提交的数据保存在平台上，刷新不丢失（站点到期后随站点一起清除）。</p>
       </details>
 
       <button class="publish-btn" id="publish-btn" type="button">
@@ -1025,7 +1025,7 @@ if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ('ontouchstar
 }
 
 /* AI 规则网址与提示词（一键复制，供网页版 AI 生成带后端的页面） */
-var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。';
+var AI_PROMPT = '做一个{功能}，输出单个 index.html（CSS/JS 全内联，不引用任何外部库、字体、图片或密钥）。数据用 JSON 通过相对路径 fetch 提交到并读取自 api/submit（不要写完整网址、前面别加/）。页面必须有 viewport meta，在 320px 窄屏不溢出、长文本换行（overflow-wrap:break-word）、渲染用户内容必须用 textContent 或转义防 XSS、要有加载/错误/空态处理、控制台零报错、文件小于 300KB。若用了后端，界面要显眼提示「后端更新约需 1 分钟」；不要写死数据有效期天数（有效期由用户在控制台自行选择）。';
 var aiUrl = location.origin + '/ai';
 $('ai-url-text').textContent = aiUrl;
 $('copy-ai-url').onclick = function(){ copyText(aiUrl, this); };
