@@ -1057,6 +1057,41 @@ await test("GET /ai 返回 AI 规则指南页", async () => {
   assert.ok(r.headers.get("x-robots-tag"), "应带安全头");
 });
 
+await test("GET /robots.txt 明文返回抓取规则、放行 AI 搜索爬虫", async () => {
+  const r = await worker.fetch(req("/robots.txt"), ENV);
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").startsWith("text/plain"), "应为纯文本");
+  const txt = await r.text();
+  assert.ok(txt.includes("User-agent: *"), "应有兜底规则");
+  assert.ok(txt.includes("Allow: /"), "默认应允许抓取");
+  assert.ok(txt.includes("Disallow: /admin"), "管理页应禁止抓取");
+  assert.ok(txt.includes("Disallow: /api/"), "接口应禁止抓取");
+  assert.ok(txt.includes("OAI-SearchBot"), "应显式列出 AI 搜索爬虫");
+  assert.ok(txt.includes("GPTBot"), "应显式列出训练爬虫");
+  assert.ok(txt.includes("Content-Signal: search=yes, ai-input=yes, ai-train=no"), "应声明 AI 内容使用偏好");
+  assert.ok(txt.includes(`Sitemap: ${ORIGIN}/sitemap.xml`), "应引用 sitemap 且域名取自当前访问域名");
+});
+
+await test("GET /sitemap.xml 返回 XML 且只列平台页面", async () => {
+  const r = await worker.fetch(req("/sitemap.xml"), ENV);
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("content-type").includes("xml"), "应为 XML");
+  const txt = await r.text();
+  assert.ok(txt.includes("<urlset"), "应是 urlset");
+  assert.ok(txt.includes(`<loc>${ORIGIN}/</loc>`), "应含首页");
+  assert.ok(txt.includes(`<loc>${ORIGIN}/ai</loc>`), "应含 AI 规则页");
+  assert.ok(!txt.includes("/admin"), "管理页不应入站");
+});
+
+await test("首页与 /ai 带 Link 头广告可发现资源（RFC 8288）", async () => {
+  for (const p of ["/", "/ai"]) {
+    const link = (await worker.fetch(req(p), ENV)).headers.get("link");
+    assert.ok(link, `${p} 应带 Link 头`);
+    assert.ok(link.includes('</ai>; rel="service-doc"'), `${p} 应广告 /ai`);
+    assert.ok(link.includes('</api/health>; rel="status"'), `${p} 应广告健康检查`);
+  }
+});
+
 await test("POST /{站点}/api/submit 存数据，GET 返回数组（默认接口零配置）", async () => {
   const post = await worker.fetch(req("/taken/api/submit", {
     method: "POST",

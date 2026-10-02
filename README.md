@@ -127,6 +127,8 @@ npx wrangler deploy                       # 3. 重新部署
 | `GET` | `/` | 图形化控制台 |
 | `GET` | `/admin` | 管理后台（需输入 `ADMIN_PASSWORD` 密码） |
 | `GET` | `/{项目名}/` | 访问站点（`/{项目名}` 301 跳转至此；已过期返回 410） |
+| `GET` | `/robots.txt` | 抓取规则（纯文本，200）：默认允许抓取并**放行 AI 搜索爬虫**（OAI-SearchBot / ChatGPT-User / PerplexityBot 等，保证 AI 能读到 `/ai`）、训练型爬虫按 `ai-train=no` 拒绝，`/admin` 与 `/api/` 一律不开放；含 `Content-Signal` 声明与 sitemap 引用 |
+| `GET` | `/sitemap.xml` | 站点地图（XML）：只列平台页面（`/`、`/ai`）；托管站点带 `noindex`，不入站 |
 | `GET` | `/api/sites?mine=a,b,c` | 项目列表 `{ok, sites:[...]}`。**只返回 `mine` 点名的站点**（前端把浏览器本地记录的名字作为 `?mine=` 传入），不传 `mine` 则返回空，后端不暴露全部站点 |
 | `GET` | `/api/sites/check?name=x` | 名字占用即时校验 `{ok, taken, warning?}`。只返回占用布尔，不泄露任何站点列表/元数据（已过期名字视为可复用） |
 | `GET` | `/api/health` | 配置自检 `{configured, missing, token_valid}` |
@@ -141,6 +143,8 @@ npx wrangler deploy                       # 3. 重新部署
 | `POST` | `/api/admin/settings` | 管理：修改上传开关 `{uploads_enabled: bool}` |
 
 管理端接口鉴权：请求头 `X-Admin-Token: <ADMIN_PASSWORD>`，缺失或错误返回 401。
+
+**Agent 发现**：首页 `/` 与 `/ai` 的响应带 RFC 8288 `Link` 头（`</ai>; rel="service-doc"`、`</api/health>; rel="status"`），agent 可从响应头直接发现规则页与健康检查端点。`robots.txt` 与 `sitemap.xml` 均由 Worker 生成，域名自动取自当前访问域名（换域名无需改代码）。
 
 上传接口支持两种请求体，可选字段 `expiry`：`"3d"` / `"7d"` / `"30d"`（默认 `"7d"`）：
 

@@ -561,3 +561,56 @@ const list = await (await fetch('api/submit')).json();</pre>
 </body>
 </html>`;
 }
+
+// ---------- robots.txt / sitemap.xml（站点级网络文件，供搜索引擎与 AI 爬虫读取） ----------
+// 同样接收当前访问域名（origin），换域名无需改代码。
+// 策略：AI 搜索 / 引用型爬虫一律放行（保证 AI 能读到 /ai 生成规则页）；
+//       训练型爬虫按 ai-train=no 拒绝；/admin 与 /api/ 不对任何爬虫开放；
+//       用户发布的托管站点（/{项目名}/）本身带 noindex，不列入 sitemap。
+const AI_SEARCH_BOTS = [
+  "OAI-SearchBot",
+  "ChatGPT-User",
+  "Claude-SearchBot",
+  "Claude-User",
+  "PerplexityBot",
+  "Perplexity-User",
+  "Googlebot",
+  "Bingbot",
+  "Baiduspider",
+];
+const AI_TRAIN_BOTS = ["GPTBot", "ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot", "Bytespider", "Amazonbot", "meta-externalagent"];
+
+export function buildRobotsTxt(origin) {
+  const site = (origin || "https://dxxx.cc.cd").replace(/\/+$/, "");
+  const block = (names, rule) => names.map((n) => `User-agent: ${n}`).join("\n") + "\n" + rule;
+  return `# robots.txt · 网页托管舱
+# 默认允许抓取平台页面（首页、/ai 生成规则页）。
+# 用户发布的托管站点位于 /{项目名}/，响应头已带 noindex，也不列入 sitemap。
+
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+Content-Signal: search=yes, ai-input=yes, ai-train=no
+
+# AI 搜索 / 引用型爬虫：放行（让 AI 能读到 /ai 规则页）
+${block(AI_SEARCH_BOTS, "Allow: /\nDisallow: /admin\nDisallow: /api/")}
+
+# 训练型爬虫：不用于模型训练（ai-train=no）
+${block(AI_TRAIN_BOTS, "Disallow: /")}
+
+Sitemap: ${site}/sitemap.xml
+`;
+}
+
+export function buildSitemap(origin) {
+  const site = (origin || "https://dxxx.cc.cd").replace(/\/+$/, "");
+  // 只列平台页面（首页、AI 规则页）；托管站点带 noindex，保持不入站
+  const urls = [`${site}/`, `${site}/ai`];
+  const body = urls.map((u) => `  <url>\n    <loc>${u}</loc>\n  </url>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${body}
+</urlset>
+`;
+}

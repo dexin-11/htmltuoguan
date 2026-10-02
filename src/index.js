@@ -5,6 +5,8 @@ import { UI_HTML, FAVICON_SVG } from "./ui.js";
 import { ADMIN_HTML } from "./admin.js";
 import {
   buildAiGuide,
+  buildRobotsTxt,
+  buildSitemap,
   BackendError,
   hasKV,
   handleBackendRequest,
@@ -48,6 +50,9 @@ const secHeaders = () => ({
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
 });
+
+// RFC 8288 Link 头：向 agent 广告平台可发现的资源（/ai 规则页 = 服务文档，/api/health = 状态端点）
+const AGENT_LINK_HEADER = '</ai>; rel="service-doc", </api/health>; rel="status"';
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -1208,7 +1213,12 @@ export default {
       // ---- 控制台页面 ----
       if (method === "GET" && (pathname === "/" || pathname === "/index.html")) {
         return new Response(UI_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...secHeaders() },
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache",
+            Link: AGENT_LINK_HEADER,
+            ...secHeaders(),
+          },
         });
       }
       if (pathname === "/favicon.ico") {
@@ -1224,8 +1234,27 @@ export default {
       // ---- AI 指南页：给网页版 AI / Agent 阅读的"生成可托管页面 + 如何发布"规则（把网址发给 AI 即可） ----
       if (method === "GET" && (pathname === "/ai" || pathname === "/ai/")) {
         return new Response(buildAiGuide(url.origin), {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ...secHeaders() },
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache",
+            Link: AGENT_LINK_HEADER,
+            ...secHeaders(),
+          },
         });
+      }
+
+      // ---- 站点级网络文件：robots.txt / sitemap.xml（明文，供搜索引擎与 AI 爬虫读取；域名自动取自当前访问域名） ----
+      if (method === "GET" || method === "HEAD") {
+        if (pathname === "/robots.txt") {
+          return new Response(buildRobotsTxt(url.origin), {
+            headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600", ...secHeaders() },
+          });
+        }
+        if (pathname === "/sitemap.xml") {
+          return new Response(buildSitemap(url.origin), {
+            headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600", ...secHeaders() },
+          });
+        }
       }
 
       // ---- API ----
